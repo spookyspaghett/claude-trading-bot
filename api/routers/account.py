@@ -40,8 +40,8 @@ async def get_equity_history() -> list[dict[str, object]]:
         return [
             {
                 "timestamp": ts,
-                "equity": eq if eq is not None else 0,
-                "profit_loss": pl if pl is not None else 0,
+                "equity": float(eq) if eq is not None else 0.0,
+                "profit_loss": float(pl) if pl is not None else 0.0,
             }
             for ts, eq, pl in zip(
                 history.timestamp,
@@ -49,8 +49,10 @@ async def get_equity_history() -> list[dict[str, object]]:
                 history.profit_loss or [],
             )
         ]
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception:
+        # Return empty list so the chart just shows nothing rather than
+        # breaking the UI (common outside market hours / fresh accounts)
+        return []
 
 
 @router.get("/pnl-intraday")
@@ -66,12 +68,12 @@ async def get_intraday_pnl() -> list[dict[str, object]]:
         return [
             {
                 "timestamp": ts,
-                "profit_loss": pl if pl is not None else 0,
+                "profit_loss": float(pl) if pl is not None else 0.0,
             }
             for ts, pl in zip(
                 history.timestamp,
                 history.profit_loss or [],
             )
         ]
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception:
+        return []
