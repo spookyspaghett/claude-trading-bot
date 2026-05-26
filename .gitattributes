@@ -1,0 +1,7 @@
+# Force LF line endings in the repo (important for shell scripts on Linux)
+* text=auto eol=lf
+
+# Binaries
+*.png binary
+*.jpg binary
+*.ico binary

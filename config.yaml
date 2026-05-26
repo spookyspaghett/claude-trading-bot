@@ -1,0 +1,25 @@
+# Paper trading only by default.
+# Set live: true ONLY when you are ready for real-money trading.
+# Even then, the program will print a confirmation prompt before starting.
+live: false
+
+# Symbols to watch and trade.
+symbols:
+  - SPY
+  - AAPL
+  - MSFT
+  - NVDA
+
+risk:
+  max_position_usd: 5000      # Maximum notional value per position (USD)
+  stop_loss_pct: 1.0          # Stop loss as % of entry price
+  daily_loss_limit_usd: 500   # Flatten all & halt trading if daily P&L drops below this
+  max_open_positions: 4       # Maximum number of concurrent open positions
+
+strategy:
+  name: orb                   # Opening-Range Breakout
+
+  orb:
+    opening_range_minutes: 15    # Observe 09:30–09:45 ET to set the range
+    entry_order_type: limit      # "limit" or "market"
+    eod_exit_time: "15:50"       # Flatten all positions at this time ET
