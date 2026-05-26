@@ -19,7 +19,12 @@ export function usePolling<T>(
         setError(null)
       }
     } catch (err) {
-      if (mountedRef.current) setError(String(err))
+      if (mountedRef.current) {
+        if (err instanceof SyntaxError) {
+          console.error('[usePolling] JSON parse error on:', url, err)
+        }
+        setError(String(err))
+      }
     }
   }, [url])
 

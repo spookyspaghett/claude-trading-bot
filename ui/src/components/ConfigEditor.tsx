@@ -27,7 +27,10 @@ export default function ConfigEditor({ onRestart }: Props) {
         setCfg(data)
         setSymbolsText(data.symbols.join(', '))
       })
-      .catch(() => setSymbolsText(DEFAULT.symbols.join(', ')))
+      .catch((err: unknown) => {
+        if (err instanceof SyntaxError) console.error('[config] JSON parse error:', err)
+        setSymbolsText(DEFAULT.symbols.join(', '))
+      })
   }, [])
 
   function setRisk(key: keyof Config['risk'], val: number) {
