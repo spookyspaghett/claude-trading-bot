@@ -1,25 +1,36 @@
 from __future__ import annotations
 
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import OrbConfig, RiskConfig, StrategyConfig  # noqa: E402
+from config_loader import OrbConfig, StrategyConfig  # noqa: E402
 
 router = APIRouter()
+
+
+class RiskPublic(BaseModel):
+    """Risk config with Decimal fields serialised as plain floats for the UI."""
+    model_config = ConfigDict(json_encoders={Decimal: float})
+
+    max_position_usd: float
+    stop_loss_pct: float
+    daily_loss_limit_usd: float
+    max_open_positions: int
 
 
 class ConfigPublic(BaseModel):
     live: bool
     symbols: list[str]
-    risk: RiskConfig
+    risk: RiskPublic
     strategy: StrategyConfig
 
 
