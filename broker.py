@@ -84,7 +84,7 @@ class BrokerClient:
             qty=float(qty),
             side=side,
             time_in_force=TimeInForce.DAY,
-            limit_price=float(limit_price),
+            limit_price=round(float(limit_price), 2),
         )
         return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]
 
@@ -100,7 +100,7 @@ class BrokerClient:
             qty=float(qty),
             side=side,
             time_in_force=TimeInForce.DAY,
-            stop_price=float(stop_price),
+            stop_price=round(float(stop_price), 2),
         )
         return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]
 
