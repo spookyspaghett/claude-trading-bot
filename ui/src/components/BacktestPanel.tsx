@@ -91,6 +91,8 @@ export default function BacktestPanel() {
   const [uploadSymbol, setUploadSymbol] = useState('SPY')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [lookbackDays, setLookbackDays] = useState(20)
+  const [longOnly, setLongOnly] = useState(false)
+  const [trendMa, setTrendMa] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Shared
@@ -126,6 +128,8 @@ export default function BacktestPanel() {
       form.append('file', uploadFile)
       form.append('symbol', uploadSymbol.trim().toUpperCase())
       form.append('lookback_days', String(lookbackDays))
+      form.append('long_only', String(longOnly))
+      form.append('trend_ma', String(trendMa))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -228,7 +232,7 @@ export default function BacktestPanel() {
                 />
               </div>
 
-              {/* Lookback — only relevant for daily; always show so user knows it exists */}
+              {/* Lookback */}
               <div>
                 <label className="text-xs text-slate-500 block mb-1">
                   Lookback days
@@ -241,6 +245,35 @@ export default function BacktestPanel() {
                   value={lookbackDays}
                   onChange={e => setLookbackDays(Math.max(2, parseInt(e.target.value) || 20))}
                 />
+              </div>
+
+              {/* Trend MA filter */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">
+                  Trend filter MA
+                  <span className="ml-1 text-slate-600">(0 = off)</span>
+                </label>
+                <input
+                  type="number"
+                  min={0} max={500} step={1}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500"
+                  value={trendMa}
+                  onChange={e => setTrendMa(Math.max(0, parseInt(e.target.value) || 0))}
+                />
+              </div>
+
+              {/* Long only */}
+              <div className="flex flex-col justify-end pb-0.5">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={longOnly}
+                    onChange={e => setLongOnly(e.target.checked)}
+                    className="w-4 h-4 accent-blue-500"
+                  />
+                  <span className="text-sm text-slate-300 font-medium">Long only</span>
+                </label>
+                <p className="text-xs text-slate-600 mt-0.5 ml-6">No short trades</p>
               </div>
 
               {/* File picker */}

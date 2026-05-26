@@ -98,6 +98,8 @@ async def run_backtest_upload(
     file: UploadFile = File(...),
     symbol: str = Form(...),
     lookback_days: int = Form(20),
+    long_only: bool = Form(False),
+    trend_ma: int = Form(0),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -129,6 +131,8 @@ async def run_backtest_upload(
             orb_config=cfg.strategy.orb,
             risk_config=cfg.risk,
             lookback=max(2, lookback_days),
+            long_only=long_only,
+            trend_ma=max(0, trend_ma),
         )
 
         return _result_to_dict(result)

@@ -251,19 +251,24 @@ def _run_with_daily_bars(
     end: date,
     risk_config: RiskConfig,
     lookback: int = 20,
+    long_only: bool = False,
+    trend_ma: int = 0,
 ) -> BacktestResult:
     """N-day Donchian channel breakout on daily OHLC bars.
 
     Entry  : close breaks above N-day high  → BUY
-             close breaks below N-day low   → SELL short
-    Exit   : stop loss (fixed %) hit on any bar's intraday range
+             close breaks below N-day low   → SELL short  (skipped if long_only=True)
+    Trend  : when trend_ma > 0, only go long above the MA, only go short below it
+    Exit   : stop loss (fixed %) hit on any bar's intrabar range
              OR close crosses the opposite channel level (reverse signal)
              OR end of data
     """
-    if len(bars) <= lookback:
+    warmup = max(lookback, trend_ma) if trend_ma > 0 else lookback
+    if len(bars) <= warmup:
         raise ValueError(
-            f"Need at least {lookback + 1} daily bars for a {lookback}-day breakout. "
-            f"Only {len(bars)} bars found — try reducing the lookback or uploading more data."
+            f"Need at least {warmup + 1} daily bars for these settings "
+            f"(lookback={lookback}, trend_ma={trend_ma}). "
+            f"Only {len(bars)} bars found — reduce the values or upload more data."
         )
 
     bars = sorted(bars, key=lambda b: b.timestamp)
@@ -282,12 +287,21 @@ def _run_with_daily_bars(
     equity_curve: list[dict[str, object]] = []
     open_trade: Trade | None = None
 
-    for i in range(lookback, len(bars)):
+    for i in range(warmup, len(bars)):
         bar    = bars[i]
-        window = bars[i - lookback: i]          # lookback bars before today
+        window = bars[i - lookback: i]
 
-        ch_high = Decimal(str(max(b.high  for b in window)))
-        ch_low  = Decimal(str(min(b.low   for b in window)))
+        ch_high = Decimal(str(max(b.high for b in window)))
+        ch_low  = Decimal(str(min(b.low  for b in window)))
+
+        # ── Trend filter: simple moving average ───────────────────────────────
+        if trend_ma > 0:
+            ma_window  = bars[i - trend_ma: i]
+            sma        = sum(b.close for b in ma_window) / trend_ma
+            trend_up   = bar.close > sma
+            trend_down = bar.close < sma
+        else:
+            trend_up = trend_down = True          # no filter — both directions allowed
 
         bar_high  = Decimal(str(bar.high))
         bar_low   = Decimal(str(bar.low))
@@ -314,7 +328,6 @@ def _run_with_daily_bars(
                 open_trade.pnl         = pnl       # type: ignore[possibly-undefined]
                 equity += pnl                       # type: ignore[possibly-undefined]
                 trades.append(open_trade)
-                # Properly remove position from risk book
                 close_qty = -open_trade.qty if open_trade.direction == "BUY" else open_trade.qty
                 risk.record_fill(symbol, close_qty, pnl)   # type: ignore[possibly-undefined]
                 open_trade = None
@@ -345,7 +358,7 @@ def _run_with_daily_bars(
         if open_trade is None:
             ok, _ = risk.check_new_order(symbol)
             if ok:
-                if bar_close > ch_high:
+                if bar_close > ch_high and trend_up:
                     qty = risk.compute_qty(bar_close)
                     if qty > Decimal("0"):
                         stop = (bar_close * (Decimal("1") - stop_factor)).quantize(Decimal("0.01"))
@@ -356,7 +369,7 @@ def _run_with_daily_bars(
                         )
                         risk.record_fill(symbol, qty, Decimal("0"))
 
-                elif bar_close < ch_low:
+                elif bar_close < ch_low and not long_only and trend_down:
                     qty = risk.compute_qty(bar_close)
                     if qty > Decimal("0"):
                         stop = (bar_close * (Decimal("1") + stop_factor)).quantize(Decimal("0.01"))
@@ -397,8 +410,18 @@ def _run_with_daily_bars(
         trades=trades,
         equity_curve=equity_curve,
         stats=_compute_stats(trades, equity_curve),
-        strategy_used=f"{lookback}-Day Donchian Breakout (daily bars)",
+        strategy_used=_daily_strategy_name(lookback, long_only, trend_ma),
     )
+
+
+def _daily_strategy_name(lookback: int, long_only: bool, trend_ma: int) -> str:
+    parts = [f"{lookback}-Day Donchian Breakout (daily"]
+    if long_only:
+        parts.append(", long only")
+    if trend_ma > 0:
+        parts.append(f", {trend_ma}-day MA filter")
+    parts.append(")")
+    return "".join(parts)
 
 
 # ── Alpaca data fetch ─────────────────────────────────────────────────────────
@@ -593,6 +616,8 @@ def _run_sync_from_bars(
     orb_config: OrbConfig,
     risk_config: RiskConfig,
     lookback: int = 20,
+    long_only: bool = False,
+    trend_ma: int = 0,
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
@@ -601,7 +626,10 @@ def _run_sync_from_bars(
     start, end = min(et_dates), max(et_dates)
 
     if _is_daily_data(bars):
-        return _run_with_daily_bars(symbol, bars, start, end, risk_config, lookback)
+        return _run_with_daily_bars(
+            symbol, bars, start, end, risk_config,
+            lookback=lookback, long_only=long_only, trend_ma=trend_ma,
+        )
     else:
         return _run_with_bars(symbol, bars, start, end, orb_config, risk_config)
 
@@ -691,7 +719,10 @@ async def run_backtest_from_file(
     orb_config: OrbConfig,
     risk_config: RiskConfig,
     lookback: int = 20,
+    long_only: bool = False,
+    trend_ma: int = 0,
 ) -> BacktestResult:
     return await asyncio.to_thread(
-        _run_sync_from_bars, symbol, bars, orb_config, risk_config, lookback,
+        _run_sync_from_bars, symbol, bars, orb_config, risk_config,
+        lookback, long_only, trend_ma,
     )
