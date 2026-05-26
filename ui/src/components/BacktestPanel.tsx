@@ -178,30 +178,39 @@ export default function BacktestPanel() {
         {source === 'upload' && (
           <div className="space-y-3">
             {/* Instructions box */}
-            <div className="rounded-lg bg-slate-800 border border-slate-600 p-3 text-xs text-slate-400 space-y-1.5">
-              <p className="text-slate-300 font-semibold">Free 1-minute data from Stooq</p>
-              <p>Download a CSV file directly from Stooq — no account required:</p>
-              <ol className="list-decimal list-inside space-y-1 ml-1">
-                <li>
-                  Open{' '}
+            <div className="rounded-lg bg-slate-800 border border-slate-600 p-3 text-xs text-slate-400 space-y-2">
+              <p className="text-slate-200 font-semibold">Free 1-minute data from Stooq (no account needed)</p>
+
+              {/* Warning callout */}
+              <div className="rounded bg-amber-900/40 border border-amber-700/50 px-3 py-2 text-amber-300 font-medium">
+                ⚠ You must use the <code className="font-bold">&amp;i=1</code> URL parameter to get 1-minute bars.
+                Without it Stooq sends daily bars and the backtest will produce 0 trades.
+              </div>
+
+              <p>Click the link for your ticker — the CSV downloads immediately:</p>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {[
+                  { label: 'SPY', url: 'https://stooq.com/q/d/l/?s=spy.us&i=1' },
+                  { label: 'AAPL', url: 'https://stooq.com/q/d/l/?s=aapl.us&i=1' },
+                  { label: 'MSFT', url: 'https://stooq.com/q/d/l/?s=msft.us&i=1' },
+                  { label: 'NVDA', url: 'https://stooq.com/q/d/l/?s=nvda.us&i=1' },
+                ].map(({ label, url }) => (
                   <a
-                    href="https://stooq.com/q/d/l/?s=spy.us&i=1"
+                    key={label}
+                    href={url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-400 hover:text-blue-300 underline inline-flex items-center gap-0.5"
+                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-blue-400 hover:text-blue-300 border border-slate-600 transition-colors font-medium"
                   >
-                    stooq.com/q/d/l/?s=spy.us&amp;i=1
-                    <ExternalLink size={10} />
-                  </a>{' '}
-                  — replace <code className="text-slate-300">spy</code> with your ticker
-                  (e.g. <code className="text-slate-300">aapl.us</code>,{' '}
-                  <code className="text-slate-300">msft.us</code>)
-                </li>
-                <li>The CSV downloads instantly — no login needed</li>
-                <li>Upload it below and click <strong className="text-slate-200">Run Backtest</strong></li>
-              </ol>
-              <p className="text-slate-500 mt-1">
-                Also accepts TradingView CSV exports and any file with Date, Time, Open, High, Low, Close columns.
+                    {label} 1-min <ExternalLink size={10} />
+                  </a>
+                ))}
+              </div>
+
+              <p className="text-slate-500">
+                Other ticker: <code className="text-slate-400">https://stooq.com/q/d/l/?s=tsla.us&amp;i=1</code>
+                &nbsp;— Stooq provides ~5–10 recent trading days of 1-min data for free.
               </p>
             </div>
 

@@ -419,6 +419,40 @@ def parse_bars_from_bytes(content: bytes, filename: str, symbol: str) -> list[Ba
     return _parse_csv_bytes(content, symbol)
 
 
+def _check_bar_granularity(bars: list[BacktestBar]) -> None:
+    """Raise a clear error when the file contains daily bars instead of intraday bars."""
+    if not bars:
+        return
+    sample = bars[:min(30, len(bars))]
+    all_midnight = all(
+        b.timestamp.hour == 0 and b.timestamp.minute == 0 and b.timestamp.second == 0
+        for b in sample
+    )
+    if all_midnight:
+        raise ValueError(
+            "This file contains DAILY bars, but the ORB strategy needs 1-MINUTE intraday bars.\n\n"
+            "When downloading from Stooq you must include &i=1 in the URL:\n"
+            "  https://stooq.com/q/d/l/?s=spy.us&i=1\n\n"
+            "Stooq provides ~5–10 recent trading days of 1-minute data for free.\n"
+            "Make sure the downloaded file has rows like:\n"
+            "  <DATE>,<TIME>,<OPEN>,<HIGH>,<LOW>,<CLOSE>,<VOL>\n"
+            "  20240102,093000,476.00,476.50,475.80,476.20,12345"
+        )
+
+    # Secondary check: if bars span more than 10 calendar days but there are
+    # fewer than 5 bars per day on average, it's almost certainly not 1-min data.
+    et_dates = [_to_et(b.timestamp).date() for b in bars]
+    span_days = (max(et_dates) - min(et_dates)).days
+    unique_days = len(set(et_dates))
+    if span_days > 10 and len(bars) / max(unique_days, 1) < 5:
+        raise ValueError(
+            f"Only {len(bars)} bars found across {unique_days} trading days "
+            f"({span_days} calendar-day span) — this looks like daily or weekly data.\n\n"
+            "The ORB strategy requires 1-minute bars.  Use &i=1 in the Stooq URL:\n"
+            "  https://stooq.com/q/d/l/?s=spy.us&i=1"
+        )
+
+
 def _run_sync_from_bars(
     symbol: str,
     bars: list[BacktestBar],
@@ -427,6 +461,7 @@ def _run_sync_from_bars(
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
+    _check_bar_granularity(bars)
     et_dates = [_to_et(b.timestamp).date() for b in bars]
     return _run_with_bars(symbol, bars, min(et_dates), max(et_dates), orb_config, risk_config)
 
