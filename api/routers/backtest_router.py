@@ -5,7 +5,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -13,6 +13,45 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 router = APIRouter()
 
+
+# ── Shared response serialiser ────────────────────────────────────────────────
+
+def _result_to_dict(result: Any) -> dict[str, Any]:
+    return {
+        "symbol":       result.symbol,
+        "start_date":   result.start_date,
+        "end_date":     result.end_date,
+        "equity_curve": result.equity_curve,
+        "stats": {
+            "total_trades":   result.stats.total_trades,
+            "winning_trades": result.stats.winning_trades,
+            "losing_trades":  result.stats.losing_trades,
+            "win_rate":       round(result.stats.win_rate * 100, 1),
+            "avg_win":        str(result.stats.avg_win.quantize(result.stats.avg_win.__class__("0.01"))),
+            "avg_loss":       str(result.stats.avg_loss.quantize(result.stats.avg_loss.__class__("0.01"))),
+            "profit_factor":  round(result.stats.profit_factor, 2),
+            "total_pnl":      str(result.stats.total_pnl.quantize(result.stats.total_pnl.__class__("0.01"))),
+            "max_drawdown":   str(result.stats.max_drawdown.quantize(result.stats.max_drawdown.__class__("0.01"))),
+            "sharpe_ratio":   round(result.stats.sharpe_ratio, 2),
+        },
+        "trades": [
+            {
+                "symbol":      t.symbol,
+                "direction":   t.direction,
+                "entry_time":  t.entry_time.isoformat(),
+                "entry_price": str(t.entry_price),
+                "exit_time":   t.exit_time.isoformat() if t.exit_time else None,
+                "exit_price":  str(t.exit_price)       if t.exit_price else None,
+                "exit_reason": t.exit_reason,
+                "qty":         str(t.qty),
+                "pnl":         str(t.pnl.quantize(t.pnl.__class__("0.01"))),
+            }
+            for t in result.trades
+        ],
+    }
+
+
+# ── Alpaca endpoint (existing) ────────────────────────────────────────────────
 
 class BacktestRequest(BaseModel):
     symbol: str
@@ -43,38 +82,53 @@ async def run_backtest_endpoint(req: BacktestRequest) -> dict[str, Any]:
             risk_config=cfg.risk,
         )
 
-        return {
-            "symbol": result.symbol,
-            "start_date": result.start_date,
-            "end_date": result.end_date,
-            "equity_curve": result.equity_curve,
-            "stats": {
-                "total_trades":   result.stats.total_trades,
-                "winning_trades": result.stats.winning_trades,
-                "losing_trades":  result.stats.losing_trades,
-                "win_rate":       round(result.stats.win_rate * 100, 1),
-                "avg_win":        str(result.stats.avg_win.quantize(result.stats.avg_win.__class__("0.01"))),
-                "avg_loss":       str(result.stats.avg_loss.quantize(result.stats.avg_loss.__class__("0.01"))),
-                "profit_factor":  round(result.stats.profit_factor, 2),
-                "total_pnl":      str(result.stats.total_pnl.quantize(result.stats.total_pnl.__class__("0.01"))),
-                "max_drawdown":   str(result.stats.max_drawdown.quantize(result.stats.max_drawdown.__class__("0.01"))),
-                "sharpe_ratio":   round(result.stats.sharpe_ratio, 2),
-            },
-            "trades": [
-                {
-                    "symbol":       t.symbol,
-                    "direction":    t.direction,
-                    "entry_time":   t.entry_time.isoformat(),
-                    "entry_price":  str(t.entry_price),
-                    "exit_time":    t.exit_time.isoformat() if t.exit_time else None,
-                    "exit_price":   str(t.exit_price) if t.exit_price else None,
-                    "exit_reason":  t.exit_reason,
-                    "qty":          str(t.qty),
-                    "pnl":          str(t.pnl.quantize(t.pnl.__class__("0.01"))),
-                }
-                for t in result.trades
-            ],
-        }
+        return _result_to_dict(result)
+
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── File-upload endpoint (new) ────────────────────────────────────────────────
+
+@router.post("/backtest/upload")
+async def run_backtest_upload(
+    file: UploadFile = File(...),
+    symbol: str = Form(...),
+) -> dict[str, Any]:
+    """Run a backtest from an uploaded CSV or Excel file.
+
+    The file must contain 1-minute OHLC bars.  Supported column formats:
+    • Standard:  Date, Time, Open, High, Low, Close, Volume
+    • Stooq:     <DATE>, <TIME>, <OPEN>, <HIGH>, <LOW>, <CLOSE>, <VOL>
+    • Combined:  Datetime (or Timestamp), Open, High, Low, Close, Volume
+    • TradingView: time (Unix), open, high, low, close, volume
+    """
+    try:
+        from backtest import parse_bars_from_bytes, run_backtest_from_file
+        from config_loader import load_config
+
+        content  = await file.read()
+        filename = file.filename or "upload.csv"
+        sym      = symbol.strip().upper()
+
+        if not sym:
+            raise ValueError("Symbol is required.")
+        if len(content) > 50 * 1024 * 1024:  # 50 MB safety limit
+            raise ValueError("File exceeds 50 MB limit.")
+
+        bars = parse_bars_from_bytes(content, filename, sym)
+
+        cfg = load_config(PROJECT_ROOT / "config.yaml")
+        result = await run_backtest_from_file(
+            symbol=sym,
+            bars=bars,
+            orb_config=cfg.strategy.orb,
+            risk_config=cfg.risk,
+        )
+
+        return _result_to_dict(result)
 
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

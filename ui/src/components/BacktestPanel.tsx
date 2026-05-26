@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Play } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Play, Upload, ExternalLink } from 'lucide-react'
 import {
   ResponsiveContainer, AreaChart, Area,
   XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine,
@@ -39,6 +39,8 @@ interface BacktestResult {
   trades: BacktestTrade[]
 }
 
+type DataSource = 'alpaca' | 'upload'
+
 const SYMBOLS = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ', 'TSLA', 'AMZN', 'META']
 
 function StatCard({
@@ -77,14 +79,25 @@ export default function BacktestPanel() {
   const thirtyDaysAgo = new Date(today)
   thirtyDaysAgo.setDate(today.getDate() - 30)
 
+  // Data source toggle
+  const [source, setSource] = useState<DataSource>('upload')
+
+  // Alpaca mode state
   const [symbol, setSymbol] = useState('SPY')
   const [startDate, setStartDate] = useState(thirtyDaysAgo.toISOString().slice(0, 10))
   const [endDate, setEndDate] = useState(today.toISOString().slice(0, 10))
+
+  // Upload mode state
+  const [uploadSymbol, setUploadSymbol] = useState('SPY')
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Shared state
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
 
-  async function runBacktest() {
+  async function runAlpaca() {
     setLoading(true)
     setError(null)
     setResult(null)
@@ -98,8 +111,29 @@ export default function BacktestPanel() {
         const data = await res.json() as { detail?: string }
         throw new Error(data.detail ?? `HTTP ${res.status}`)
       }
-      const data = await res.json() as BacktestResult
-      setResult(data)
+      setResult(await res.json() as BacktestResult)
+    } catch (err) {
+      setError(String(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function runUpload() {
+    if (!uploadFile) { setError('Please select a CSV or Excel file first.'); return }
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const form = new FormData()
+      form.append('file', uploadFile)
+      form.append('symbol', uploadSymbol.trim().toUpperCase())
+      const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
+      if (!res.ok) {
+        const data = await res.json() as { detail?: string }
+        throw new Error(data.detail ?? `HTTP ${res.status}`)
+      }
+      setResult(await res.json() as BacktestResult)
     } catch (err) {
       setError(String(err))
     } finally {
@@ -114,53 +148,170 @@ export default function BacktestPanel() {
   return (
     <div className="space-y-4">
       {/* ── Controls ─────────────────────────────────────────────────────── */}
-      <div className="bg-slate-900 rounded-xl border border-slate-700 p-4">
-        <h2 className="text-sm font-semibold text-slate-200 mb-4">Backtest — ORB Strategy</h2>
-        <div className="flex flex-wrap gap-3 items-end">
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Symbol</label>
-            <select
-              value={symbol}
-              onChange={e => setSymbol(e.target.value)}
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+      <div className="bg-slate-900 rounded-xl border border-slate-700 p-4 space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <h2 className="text-sm font-semibold text-slate-200">Backtest — ORB Strategy</h2>
+
+          {/* Source toggle */}
+          <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+            <button
+              onClick={() => setSource('upload')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                source === 'upload' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
             >
-              {SYMBOLS.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
+              <Upload size={12} />
+              Upload CSV / Excel
+            </button>
+            <button
+              onClick={() => setSource('alpaca')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                source === 'alpaca' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Alpaca SIP
+            </button>
           </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">Start date</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={e => setStartDate(e.target.value)}
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-slate-500 block mb-1">End date</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={e => setEndDate(e.target.value)}
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
-            />
-          </div>
-          <button
-            onClick={() => void runBacktest()}
-            disabled={loading}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors"
-          >
-            <Play size={14} />
-            {loading ? 'Running…' : 'Run Backtest'}
-          </button>
-          {error && <span className="text-xs text-red-400">{error}</span>}
         </div>
-        <p className="text-xs text-slate-600 mt-2">Max range: 180 days. Uses same risk params as live config.</p>
+
+        {/* ── Upload mode ────────────────────────────────────────────── */}
+        {source === 'upload' && (
+          <div className="space-y-3">
+            {/* Instructions box */}
+            <div className="rounded-lg bg-slate-800 border border-slate-600 p-3 text-xs text-slate-400 space-y-1.5">
+              <p className="text-slate-300 font-semibold">Free 1-minute data from Stooq</p>
+              <p>Download a CSV file directly from Stooq — no account required:</p>
+              <ol className="list-decimal list-inside space-y-1 ml-1">
+                <li>
+                  Open{' '}
+                  <a
+                    href="https://stooq.com/q/d/l/?s=spy.us&i=1"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-400 hover:text-blue-300 underline inline-flex items-center gap-0.5"
+                  >
+                    stooq.com/q/d/l/?s=spy.us&amp;i=1
+                    <ExternalLink size={10} />
+                  </a>{' '}
+                  — replace <code className="text-slate-300">spy</code> with your ticker
+                  (e.g. <code className="text-slate-300">aapl.us</code>,{' '}
+                  <code className="text-slate-300">msft.us</code>)
+                </li>
+                <li>The CSV downloads instantly — no login needed</li>
+                <li>Upload it below and click <strong className="text-slate-200">Run Backtest</strong></li>
+              </ol>
+              <p className="text-slate-500 mt-1">
+                Also accepts TradingView CSV exports and any file with Date, Time, Open, High, Low, Close columns.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3 items-end">
+              {/* Symbol */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Symbol (in the file)</label>
+                <input
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500 uppercase"
+                  value={uploadSymbol}
+                  onChange={e => setUploadSymbol(e.target.value.toUpperCase())}
+                  placeholder="SPY"
+                />
+              </div>
+
+              {/* File picker */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">CSV or Excel file</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    className="hidden"
+                    onChange={e => setUploadFile(e.target.files?.[0] ?? null)}
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-slate-700 hover:bg-slate-600 border border-slate-600 transition-colors"
+                  >
+                    <Upload size={13} />
+                    {uploadFile ? uploadFile.name : 'Choose file…'}
+                  </button>
+                  {uploadFile && (
+                    <span className="text-xs text-slate-500">
+                      {(uploadFile.size / 1024).toFixed(0)} KB
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <button
+                onClick={() => void runUpload()}
+                disabled={loading || !uploadFile}
+                className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors"
+              >
+                <Play size={14} />
+                {loading ? 'Running…' : 'Run Backtest'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Alpaca mode ─────────────────────────────────────────────── */}
+        {source === 'alpaca' && (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-3 items-end">
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Symbol</label>
+                <select
+                  value={symbol}
+                  onChange={e => setSymbol(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+                >
+                  {SYMBOLS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Start date</label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={e => setStartDate(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">End date</label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={e => setEndDate(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <button
+                onClick={() => void runAlpaca()}
+                disabled={loading}
+                className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 disabled:opacity-50 transition-colors"
+              >
+                <Play size={14} />
+                {loading ? 'Running…' : 'Run Backtest'}
+              </button>
+            </div>
+            <p className="text-xs text-slate-600">
+              Requires an Alpaca SIP subscription. Max range: 180 days.
+            </p>
+          </div>
+        )}
+
+        {error && (
+          <p className="text-xs text-red-400 bg-red-900/20 border border-red-800/40 rounded-lg px-3 py-2 whitespace-pre-wrap">
+            {error}
+          </p>
+        )}
       </div>
 
       {loading && (
         <div className="bg-slate-900 rounded-xl border border-slate-700 p-10 text-center text-slate-500 text-sm">
-          Fetching historical bars and replaying strategy… this may take 20–60 seconds.
+          Replaying strategy over uploaded bars… this may take a few seconds.
         </div>
       )}
 
@@ -194,8 +345,8 @@ export default function BacktestPanel() {
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard label="Avg Win" value={fmtUsd(result.stats.avg_win)} positive={true} />
-            <StatCard label="Avg Loss" value={`-$${result.stats.avg_loss}`} positive={false} />
+            <StatCard label="Avg Win"  value={fmtUsd(result.stats.avg_win)}  positive={true} />
+            <StatCard label="Avg Loss" value={`-$${result.stats.avg_loss}`}  positive={false} />
             <StatCard
               label="Sharpe Ratio"
               value={String(result.stats.sharpe_ratio)}
@@ -205,7 +356,7 @@ export default function BacktestPanel() {
             <StatCard
               label="Period"
               value={`${result.start_date} → ${result.end_date}`}
-              sub={`${result.symbol}`}
+              sub={result.symbol}
             />
           </div>
 
@@ -220,7 +371,7 @@ export default function BacktestPanel() {
                   <AreaChart data={result.equity_curve} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
                     <defs>
                       <linearGradient id="btGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={equityColor} stopOpacity={0.2} />
+                        <stop offset="5%"  stopColor={equityColor} stopOpacity={0.2} />
                         <stop offset="95%" stopColor={equityColor} stopOpacity={0} />
                       </linearGradient>
                     </defs>
