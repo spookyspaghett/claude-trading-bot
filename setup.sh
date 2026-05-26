@@ -219,6 +219,8 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 cd "$SCRIPT_DIR"
 mkdir -p logs
+# Fix ownership — setup runs as root but the service runs as $CURRENT_USER
+chown -R "$CURRENT_USER":"$CURRENT_USER" "$SCRIPT_DIR"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 10. .env check
