@@ -34,6 +34,7 @@ interface BacktestResult {
   symbol: string
   start_date: string
   end_date: string
+  strategy_used: string
   stats: BacktestStats
   equity_curve: { timestamp: number; equity: number }[]
   trades: BacktestTrade[]
@@ -79,28 +80,26 @@ export default function BacktestPanel() {
   const thirtyDaysAgo = new Date(today)
   thirtyDaysAgo.setDate(today.getDate() - 30)
 
-  // Data source toggle
   const [source, setSource] = useState<DataSource>('upload')
 
-  // Alpaca mode state
+  // Alpaca mode
   const [symbol, setSymbol] = useState('SPY')
   const [startDate, setStartDate] = useState(thirtyDaysAgo.toISOString().slice(0, 10))
   const [endDate, setEndDate] = useState(today.toISOString().slice(0, 10))
 
-  // Upload mode state
+  // Upload mode
   const [uploadSymbol, setUploadSymbol] = useState('SPY')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [lookbackDays, setLookbackDays] = useState(20)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Shared state
+  // Shared
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
 
   async function runAlpaca() {
-    setLoading(true)
-    setError(null)
-    setResult(null)
+    setLoading(true); setError(null); setResult(null)
     try {
       const res = await fetch('/api/backtest', {
         method: 'POST',
@@ -121,13 +120,12 @@ export default function BacktestPanel() {
 
   async function runUpload() {
     if (!uploadFile) { setError('Please select a CSV or Excel file first.'); return }
-    setLoading(true)
-    setError(null)
-    setResult(null)
+    setLoading(true); setError(null); setResult(null)
     try {
       const form = new FormData()
       form.append('file', uploadFile)
       form.append('symbol', uploadSymbol.trim().toUpperCase())
+      form.append('lookback_days', String(lookbackDays))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -141,18 +139,17 @@ export default function BacktestPanel() {
     }
   }
 
-  const pnlPositive = result ? parseFloat(result.stats.total_pnl) >= 0 : true
-  const equityStart = result?.equity_curve[0]?.equity ?? 100000
-  const equityColor = pnlPositive ? '#4ade80' : '#f87171'
+  const pnlPositive  = result ? parseFloat(result.stats.total_pnl) >= 0 : true
+  const equityStart  = result?.equity_curve[0]?.equity ?? 100000
+  const equityColor  = pnlPositive ? '#4ade80' : '#f87171'
+  const isDaily      = result?.strategy_used.includes('daily') ?? false
 
   return (
     <div className="space-y-4">
       {/* ── Controls ─────────────────────────────────────────────────────── */}
       <div className="bg-slate-900 rounded-xl border border-slate-700 p-4 space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
-          <h2 className="text-sm font-semibold text-slate-200">Backtest — ORB Strategy</h2>
-
-          {/* Source toggle */}
+          <h2 className="text-sm font-semibold text-slate-200">Backtest</h2>
           <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
             <button
               onClick={() => setSource('upload')}
@@ -174,55 +171,75 @@ export default function BacktestPanel() {
           </div>
         </div>
 
-        {/* ── Upload mode ────────────────────────────────────────────── */}
+        {/* ── Upload mode ────────────────────────────────────────────────── */}
         {source === 'upload' && (
           <div className="space-y-3">
-            {/* Instructions box */}
+            {/* Stooq quick-download links */}
             <div className="rounded-lg bg-slate-800 border border-slate-600 p-3 text-xs text-slate-400 space-y-2">
-              <p className="text-slate-200 font-semibold">Free 1-minute data from Stooq (no account needed)</p>
-
-              {/* Warning callout */}
-              <div className="rounded bg-amber-900/40 border border-amber-700/50 px-3 py-2 text-amber-300 font-medium">
-                ⚠ You must use the <code className="font-bold">&amp;i=1</code> URL parameter to get 1-minute bars.
-                Without it Stooq sends daily bars and the backtest will produce 0 trades.
+              <p className="text-slate-300 font-semibold">Free historical data — no account needed</p>
+              <div className="space-y-1 text-slate-400">
+                <p>
+                  <span className="text-slate-300 font-medium">Daily bars</span>
+                  {' '}— any stock, years of history. Click to download:
+                </p>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {[['SPY','spy'],['AAPL','aapl'],['MSFT','msft'],['NVDA','nvda'],['QQQ','qqq'],['TSLA','tsla']].map(([label, s]) => (
+                    <a key={label}
+                      href={`https://stooq.com/q/d/l/?s=${s}.us`}
+                      target="_blank" rel="noopener noreferrer"
+                      className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 border border-slate-600 text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
+                    >
+                      {label} <ExternalLink size={9} />
+                    </a>
+                  ))}
+                </div>
               </div>
-
-              <p>Click the link for your ticker — the CSV downloads immediately:</p>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                {[
-                  { label: 'SPY', url: 'https://stooq.com/q/d/l/?s=spy.us&i=1' },
-                  { label: 'AAPL', url: 'https://stooq.com/q/d/l/?s=aapl.us&i=1' },
-                  { label: 'MSFT', url: 'https://stooq.com/q/d/l/?s=msft.us&i=1' },
-                  { label: 'NVDA', url: 'https://stooq.com/q/d/l/?s=nvda.us&i=1' },
-                ].map(({ label, url }) => (
-                  <a
-                    key={label}
-                    href={url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-1 px-2 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-blue-400 hover:text-blue-300 border border-slate-600 transition-colors font-medium"
-                  >
-                    {label} 1-min <ExternalLink size={10} />
-                  </a>
-                ))}
+              <div className="space-y-1 text-slate-400 pt-1 border-t border-slate-700">
+                <p>
+                  <span className="text-slate-300 font-medium">1-minute bars</span>
+                  {' '}— last ~5–10 trading days only (for ORB strategy):
+                </p>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {[['SPY','spy'],['AAPL','aapl'],['MSFT','msft'],['NVDA','nvda']].map(([label, s]) => (
+                    <a key={label}
+                      href={`https://stooq.com/q/d/l/?s=${s}.us&i=1`}
+                      target="_blank" rel="noopener noreferrer"
+                      className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 border border-slate-600 text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
+                    >
+                      {label} 1-min <ExternalLink size={9} />
+                    </a>
+                  ))}
+                </div>
               </div>
-
-              <p className="text-slate-500">
-                Other ticker: <code className="text-slate-400">https://stooq.com/q/d/l/?s=tsla.us&amp;i=1</code>
-                &nbsp;— Stooq provides ~5–10 recent trading days of 1-min data for free.
+              <p className="text-slate-500 pt-1 border-t border-slate-700">
+                The strategy is chosen automatically: daily files → N-day Donchian Breakout · 1-minute files → ORB
               </p>
             </div>
 
             <div className="flex flex-wrap gap-3 items-end">
               {/* Symbol */}
               <div>
-                <label className="text-xs text-slate-500 block mb-1">Symbol (in the file)</label>
+                <label className="text-xs text-slate-500 block mb-1">Symbol</label>
                 <input
-                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500 uppercase"
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-28 focus:outline-none focus:border-blue-500 uppercase"
                   value={uploadSymbol}
                   onChange={e => setUploadSymbol(e.target.value.toUpperCase())}
                   placeholder="SPY"
+                />
+              </div>
+
+              {/* Lookback — only relevant for daily; always show so user knows it exists */}
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">
+                  Lookback days
+                  <span className="ml-1 text-slate-600">(daily strategy)</span>
+                </label>
+                <input
+                  type="number"
+                  min={2} max={200} step={1}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500"
+                  value={lookbackDays}
+                  onChange={e => setLookbackDays(Math.max(2, parseInt(e.target.value) || 20))}
                 />
               </div>
 
@@ -235,7 +252,7 @@ export default function BacktestPanel() {
                     type="file"
                     accept=".csv,.xlsx,.xls"
                     className="hidden"
-                    onChange={e => setUploadFile(e.target.files?.[0] ?? null)}
+                    onChange={e => { setUploadFile(e.target.files?.[0] ?? null); setResult(null) }}
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
@@ -264,7 +281,7 @@ export default function BacktestPanel() {
           </div>
         )}
 
-        {/* ── Alpaca mode ─────────────────────────────────────────────── */}
+        {/* ── Alpaca mode ─────────────────────────────────────────────────── */}
         {source === 'alpaca' && (
           <div className="space-y-2">
             <div className="flex flex-wrap gap-3 items-end">
@@ -280,21 +297,13 @@ export default function BacktestPanel() {
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Start date</label>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={e => setStartDate(e.target.value)}
-                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
-                />
+                <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">End date</label>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={e => setEndDate(e.target.value)}
-                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
-                />
+                <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
               </div>
               <button
                 onClick={() => void runAlpaca()}
@@ -306,7 +315,7 @@ export default function BacktestPanel() {
               </button>
             </div>
             <p className="text-xs text-slate-600">
-              Requires an Alpaca SIP subscription. Max range: 180 days.
+              Requires an Alpaca SIP data subscription. Max range: 180 days.
             </p>
           </div>
         )}
@@ -319,13 +328,24 @@ export default function BacktestPanel() {
       </div>
 
       {loading && (
-        <div className="bg-slate-900 rounded-xl border border-slate-700 p-10 text-center text-slate-500 text-sm">
-          Replaying strategy over uploaded bars… this may take a few seconds.
+        <div className="bg-slate-900 rounded-xl border border-slate-700 p-10 text-center text-slate-500 text-sm animate-pulse">
+          Running strategy…
         </div>
       )}
 
       {result && (
         <>
+          {/* Strategy badge */}
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
+              isDaily
+                ? 'bg-purple-900/40 text-purple-300 border-purple-700/50'
+                : 'bg-blue-900/40 text-blue-300 border-blue-700/50'
+            }`}>
+              {result.strategy_used}
+            </span>
+          </div>
+
           {/* ── Stats cards ──────────────────────────────────────────────── */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             <StatCard label="Total Trades" value={String(result.stats.total_trades)} />
@@ -346,11 +366,7 @@ export default function BacktestPanel() {
               sub="gross profit / gross loss"
               positive={result.stats.profit_factor >= 1}
             />
-            <StatCard
-              label="Max Drawdown"
-              value={`-$${result.stats.max_drawdown}`}
-              positive={false}
-            />
+            <StatCard label="Max Drawdown" value={`-$${result.stats.max_drawdown}`} positive={false} />
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -385,15 +401,18 @@ export default function BacktestPanel() {
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                    <XAxis dataKey="timestamp" tickFormatter={formatDate} tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={40} />
-                    <YAxis tickFormatter={v => `$${((v as number) / 1000).toFixed(0)}k`} tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} axisLine={false} width={52} domain={['auto', 'auto']} />
+                    <XAxis dataKey="timestamp" tickFormatter={formatDate}
+                      tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={40} />
+                    <YAxis tickFormatter={v => `$${((v as number) / 1000).toFixed(0)}k`}
+                      tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} axisLine={false} width={52} domain={['auto', 'auto']} />
                     <Tooltip
                       contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
                       labelFormatter={v => formatDate(v as number)}
                       formatter={(v: number) => [v.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }), 'Equity']}
                     />
                     <ReferenceLine y={equityStart} stroke="#475569" strokeDasharray="4 2" />
-                    <Area type="monotone" dataKey="equity" stroke={equityColor} strokeWidth={2} fill="url(#btGrad)" dot={false} activeDot={{ r: 4 }} />
+                    <Area type="monotone" dataKey="equity" stroke={equityColor} strokeWidth={2}
+                      fill="url(#btGrad)" dot={false} activeDot={{ r: 4 }} />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>

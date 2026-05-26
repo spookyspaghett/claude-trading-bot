@@ -18,10 +18,11 @@ router = APIRouter()
 
 def _result_to_dict(result: Any) -> dict[str, Any]:
     return {
-        "symbol":       result.symbol,
-        "start_date":   result.start_date,
-        "end_date":     result.end_date,
-        "equity_curve": result.equity_curve,
+        "symbol":        result.symbol,
+        "start_date":    result.start_date,
+        "end_date":      result.end_date,
+        "strategy_used": result.strategy_used,
+        "equity_curve":  result.equity_curve,
         "stats": {
             "total_trades":   result.stats.total_trades,
             "winning_trades": result.stats.winning_trades,
@@ -96,6 +97,7 @@ async def run_backtest_endpoint(req: BacktestRequest) -> dict[str, Any]:
 async def run_backtest_upload(
     file: UploadFile = File(...),
     symbol: str = Form(...),
+    lookback_days: int = Form(20),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -126,6 +128,7 @@ async def run_backtest_upload(
             bars=bars,
             orb_config=cfg.strategy.orb,
             risk_config=cfg.risk,
+            lookback=max(2, lookback_days),
         )
 
         return _result_to_dict(result)

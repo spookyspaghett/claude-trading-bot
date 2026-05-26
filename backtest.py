@@ -22,14 +22,14 @@ if TYPE_CHECKING:
 ET = ZoneInfo("America/New_York")
 
 
-# ── Bar dataclass (compatible with ORBStrategy.on_bar) ───────────────────────
+# ── Bar dataclass ─────────────────────────────────────────────────────────────
 
 @dataclass
 class BacktestBar:
     """Minimal bar shape accepted by ORBStrategy.on_bar().
 
-    Has the same attribute names as alpaca.data.models.Bar so the strategy
-    code can consume either without modification.
+    Attribute names match alpaca.data.models.Bar so the strategy code
+    works with either without modification.
     """
     symbol: str
     timestamp: datetime
@@ -52,7 +52,7 @@ class Trade:
     qty: Decimal
     exit_time: datetime | None = None
     exit_price: Decimal | None = None
-    exit_reason: str = ""   # "stop" | "eod" | "eod_forced"
+    exit_reason: str = ""
     pnl: Decimal = field(default_factory=lambda: Decimal("0"))
 
 
@@ -76,8 +76,9 @@ class BacktestResult:
     start_date: str
     end_date: str
     trades: list[Trade]
-    equity_curve: list[dict[str, object]]   # [{timestamp, equity}]
+    equity_curve: list[dict[str, object]]
     stats: BacktestStats
+    strategy_used: str = "ORB (1-minute bars)"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -88,7 +89,27 @@ def _to_et(ts: datetime) -> datetime:
     return ts.astimezone(ET)
 
 
-# ── Core simulation loop ──────────────────────────────────────────────────────
+def _is_daily_data(bars: list[BacktestBar]) -> bool:
+    """Return True when timestamps suggest daily (not intraday) bars."""
+    if not bars:
+        return False
+    sample = bars[:min(30, len(bars))]
+    # Daily bars from most sources have midnight (00:00:00) timestamps
+    all_midnight = all(
+        b.timestamp.hour == 0 and b.timestamp.minute == 0 and b.timestamp.second == 0
+        for b in sample
+    )
+    if all_midnight:
+        return True
+    # Secondary check: very few bars per trading day → not 1-min data
+    et_dates = [_to_et(b.timestamp).date() for b in bars]
+    unique_days = len(set(et_dates))
+    if unique_days > 0 and len(bars) / unique_days < 5:
+        return True
+    return False
+
+
+# ── ORB simulation (intraday / 1-minute bars) ─────────────────────────────────
 
 def _run_with_bars(
     symbol: str,
@@ -98,9 +119,8 @@ def _run_with_bars(
     orb_config: OrbConfig,
     risk_config: RiskConfig,
 ) -> BacktestResult:
-    """Replay the ORB strategy over a list of BacktestBar objects."""
+    """Replay the ORB strategy over 1-minute BacktestBar objects."""
 
-    # Group by ET trading day
     days: dict[date, list[BacktestBar]] = {}
     for bar in bars:
         d = _to_et(bar.timestamp).date()
@@ -128,35 +148,33 @@ def _run_with_bars(
         open_trade: Trade | None = None
 
         for bar in day_bars:
-            bar_high = Decimal(str(bar.high))
-            bar_low = Decimal(str(bar.low))
+            bar_high  = Decimal(str(bar.high))
+            bar_low   = Decimal(str(bar.low))
             bar_close = Decimal(str(bar.close))
-            bar_et = _to_et(bar.timestamp)
+            bar_et    = _to_et(bar.timestamp)
 
-            # ── Check stop loss on open position ──────────────────────────────
             if open_trade is not None:
                 stopped = False
                 if open_trade.direction == "BUY" and bar_low <= open_trade.stop_price:
                     exit_px = open_trade.stop_price
-                    pnl = (exit_px - open_trade.entry_price) * open_trade.qty
+                    pnl     = (exit_px - open_trade.entry_price) * open_trade.qty
                     stopped = True
                 elif open_trade.direction == "SELL" and bar_high >= open_trade.stop_price:
                     exit_px = open_trade.stop_price
-                    pnl = (open_trade.entry_price - exit_px) * open_trade.qty
+                    pnl     = (open_trade.entry_price - exit_px) * open_trade.qty
                     stopped = True
 
                 if stopped:
-                    open_trade.exit_time = bar_et
-                    open_trade.exit_price = exit_px  # type: ignore[possibly-undefined]
+                    open_trade.exit_time   = bar_et
+                    open_trade.exit_price  = exit_px   # type: ignore[possibly-undefined]
                     open_trade.exit_reason = "stop"
-                    open_trade.pnl = pnl  # type: ignore[possibly-undefined]
-                    equity += pnl  # type: ignore[possibly-undefined]
+                    open_trade.pnl         = pnl       # type: ignore[possibly-undefined]
+                    equity += pnl                       # type: ignore[possibly-undefined]
                     trades.append(open_trade)
-                    risk.record_fill(symbol, Decimal("0"), pnl)  # type: ignore[possibly-undefined]
+                    risk.record_fill(symbol, Decimal("0"), pnl)   # type: ignore[possibly-undefined]
                     open_trade = None
                     continue
 
-            # ── Feed bar to strategy ──────────────────────────────────────────
             sig = strategy.on_bar(bar)  # type: ignore[arg-type]
             if sig is None:
                 continue
@@ -166,10 +184,10 @@ def _run_with_bars(
                     pnl = (bar_close - open_trade.entry_price) * open_trade.qty
                 else:
                     pnl = (open_trade.entry_price - bar_close) * open_trade.qty
-                open_trade.exit_time = bar_et
-                open_trade.exit_price = bar_close
+                open_trade.exit_time   = bar_et
+                open_trade.exit_price  = bar_close
                 open_trade.exit_reason = "eod"
-                open_trade.pnl = pnl
+                open_trade.pnl         = pnl
                 equity += pnl
                 trades.append(open_trade)
                 open_trade = None
@@ -191,18 +209,18 @@ def _run_with_bars(
                 )
                 risk.record_fill(symbol, qty, Decimal("0"))
 
-        # ── Force-close anything still open at end of day ─────────────────────
         if open_trade is not None and day_bars:
-            last = day_bars[-1]
+            last   = day_bars[-1]
             exit_px = Decimal(str(last.close))
-            if open_trade.direction == "BUY":
-                pnl = (exit_px - open_trade.entry_price) * open_trade.qty
-            else:
-                pnl = (open_trade.entry_price - exit_px) * open_trade.qty
-            open_trade.exit_time = _to_et(last.timestamp)
-            open_trade.exit_price = exit_px
+            pnl = (
+                (exit_px - open_trade.entry_price) * open_trade.qty
+                if open_trade.direction == "BUY"
+                else (open_trade.entry_price - exit_px) * open_trade.qty
+            )
+            open_trade.exit_time   = _to_et(last.timestamp)
+            open_trade.exit_price  = exit_px
             open_trade.exit_reason = "eod_forced"
-            open_trade.pnl = pnl
+            open_trade.pnl         = pnl
             equity += pnl
             trades.append(open_trade)
 
@@ -220,6 +238,166 @@ def _run_with_bars(
         trades=trades,
         equity_curve=equity_curve,
         stats=_compute_stats(trades, equity_curve),
+        strategy_used="ORB (1-minute bars)",
+    )
+
+
+# ── N-day Donchian breakout (daily bars) ──────────────────────────────────────
+
+def _run_with_daily_bars(
+    symbol: str,
+    bars: list[BacktestBar],
+    start: date,
+    end: date,
+    risk_config: RiskConfig,
+    lookback: int = 20,
+) -> BacktestResult:
+    """N-day Donchian channel breakout on daily OHLC bars.
+
+    Entry  : close breaks above N-day high  → BUY
+             close breaks below N-day low   → SELL short
+    Exit   : stop loss (fixed %) hit on any bar's intraday range
+             OR close crosses the opposite channel level (reverse signal)
+             OR end of data
+    """
+    if len(bars) <= lookback:
+        raise ValueError(
+            f"Need at least {lookback + 1} daily bars for a {lookback}-day breakout. "
+            f"Only {len(bars)} bars found — try reducing the lookback or uploading more data."
+        )
+
+    bars = sorted(bars, key=lambda b: b.timestamp)
+
+    stop_factor = Decimal(str(risk_config.stop_loss_pct)) / Decimal("100")
+
+    risk = RiskManager(
+        max_position_usd=risk_config.max_position_usd,
+        stop_loss_pct=risk_config.stop_loss_pct,
+        daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
+        max_open_positions=risk_config.max_open_positions,
+    )
+
+    trades: list[Trade] = []
+    equity = Decimal("100000")
+    equity_curve: list[dict[str, object]] = []
+    open_trade: Trade | None = None
+
+    for i in range(lookback, len(bars)):
+        bar    = bars[i]
+        window = bars[i - lookback: i]          # lookback bars before today
+
+        ch_high = Decimal(str(max(b.high  for b in window)))
+        ch_low  = Decimal(str(min(b.low   for b in window)))
+
+        bar_high  = Decimal(str(bar.high))
+        bar_low   = Decimal(str(bar.low))
+        bar_close = Decimal(str(bar.close))
+        bar_et    = _to_et(bar.timestamp)
+        bar_date  = bar_et.date()
+
+        # ── 1. Check stop loss (uses intrabar high/low) ───────────────────────
+        if open_trade is not None:
+            stopped = False
+            if open_trade.direction == "BUY" and bar_low <= open_trade.stop_price:
+                exit_px = open_trade.stop_price
+                pnl     = (exit_px - open_trade.entry_price) * open_trade.qty
+                stopped = True
+            elif open_trade.direction == "SELL" and bar_high >= open_trade.stop_price:
+                exit_px = open_trade.stop_price
+                pnl     = (open_trade.entry_price - exit_px) * open_trade.qty
+                stopped = True
+
+            if stopped:
+                open_trade.exit_time   = bar_et
+                open_trade.exit_price  = exit_px   # type: ignore[possibly-undefined]
+                open_trade.exit_reason = "stop"
+                open_trade.pnl         = pnl       # type: ignore[possibly-undefined]
+                equity += pnl                       # type: ignore[possibly-undefined]
+                trades.append(open_trade)
+                # Properly remove position from risk book
+                close_qty = -open_trade.qty if open_trade.direction == "BUY" else open_trade.qty
+                risk.record_fill(symbol, close_qty, pnl)   # type: ignore[possibly-undefined]
+                open_trade = None
+
+        # ── 2. Check reverse / channel exit ──────────────────────────────────
+        if open_trade is not None:
+            reverse = (
+                open_trade.direction == "BUY"  and bar_close < ch_low
+                or open_trade.direction == "SELL" and bar_close > ch_high
+            )
+            if reverse:
+                pnl = (
+                    (bar_close - open_trade.entry_price) * open_trade.qty
+                    if open_trade.direction == "BUY"
+                    else (open_trade.entry_price - bar_close) * open_trade.qty
+                )
+                open_trade.exit_time   = bar_et
+                open_trade.exit_price  = bar_close
+                open_trade.exit_reason = "channel"
+                open_trade.pnl         = pnl
+                equity += pnl
+                trades.append(open_trade)
+                close_qty = -open_trade.qty if open_trade.direction == "BUY" else open_trade.qty
+                risk.record_fill(symbol, close_qty, pnl)
+                open_trade = None
+
+        # ── 3. Entry signal ───────────────────────────────────────────────────
+        if open_trade is None:
+            ok, _ = risk.check_new_order(symbol)
+            if ok:
+                if bar_close > ch_high:
+                    qty = risk.compute_qty(bar_close)
+                    if qty > Decimal("0"):
+                        stop = (bar_close * (Decimal("1") - stop_factor)).quantize(Decimal("0.01"))
+                        open_trade = Trade(
+                            symbol=symbol, direction="BUY",
+                            entry_time=bar_et, entry_price=bar_close,
+                            stop_price=stop, qty=qty,
+                        )
+                        risk.record_fill(symbol, qty, Decimal("0"))
+
+                elif bar_close < ch_low:
+                    qty = risk.compute_qty(bar_close)
+                    if qty > Decimal("0"):
+                        stop = (bar_close * (Decimal("1") + stop_factor)).quantize(Decimal("0.01"))
+                        open_trade = Trade(
+                            symbol=symbol, direction="SELL",
+                            entry_time=bar_et, entry_price=bar_close,
+                            stop_price=stop, qty=qty,
+                        )
+                        risk.record_fill(symbol, -qty, Decimal("0"))
+
+        equity_curve.append({
+            "timestamp": int(
+                datetime(bar_date.year, bar_date.month, bar_date.day, tzinfo=ET).timestamp()
+            ),
+            "equity": float(equity),
+        })
+
+    # ── Force-close open position at end of data ──────────────────────────────
+    if open_trade is not None:
+        last    = bars[-1]
+        exit_px = Decimal(str(last.close))
+        pnl = (
+            (exit_px - open_trade.entry_price) * open_trade.qty
+            if open_trade.direction == "BUY"
+            else (open_trade.entry_price - exit_px) * open_trade.qty
+        )
+        open_trade.exit_time   = _to_et(last.timestamp)
+        open_trade.exit_price  = exit_px
+        open_trade.exit_reason = "end"
+        open_trade.pnl         = pnl
+        equity += pnl
+        trades.append(open_trade)
+
+    return BacktestResult(
+        symbol=symbol,
+        start_date=str(start),
+        end_date=str(end),
+        trades=trades,
+        equity_curve=equity_curve,
+        stats=_compute_stats(trades, equity_curve),
+        strategy_used=f"{lookback}-Day Donchian Breakout (daily bars)",
     )
 
 
@@ -234,15 +412,15 @@ def _run_sync(
     orb_config: OrbConfig,
     risk_config: RiskConfig,
 ) -> BacktestResult:
-    client = StockHistoricalDataClient(api_key, secret_key)
+    client  = StockHistoricalDataClient(api_key, secret_key)
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=TimeFrame(1, TimeFrameUnit.Minute),
         start=datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
         end=datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc),
     )
-    raw = client.get_stock_bars(request)
-    alpaca_bars = list(raw[symbol]) if symbol in raw else []
+    raw          = client.get_stock_bars(request)
+    alpaca_bars  = list(raw[symbol]) if symbol in raw else []
 
     bars: list[BacktestBar] = [
         BacktestBar(
@@ -297,7 +475,6 @@ def _parse_dt(s: str) -> datetime:
             return datetime.strptime(s, fmt)
         except ValueError:
             pass
-    # Unix timestamp
     try:
         return datetime.fromtimestamp(int(s), tz=timezone.utc)
     except (ValueError, OSError):
@@ -310,7 +487,6 @@ def _rows_to_bars(
     rows: list[list[str]],
     symbol: str,
 ) -> list[BacktestBar]:
-    # Locate columns
     dt_col   = _find_col(headers, ["datetime", "timestamp", "date_time"])
     date_col = _find_col(headers, ["date"])
     time_col = _find_col(headers, ["time"])
@@ -329,24 +505,22 @@ def _rows_to_bars(
 
     # TradingView exports a single 'time' column (Unix timestamp) with no 'date' column
     if dt_col is None and date_col is None and time_col is not None:
-        dt_col = time_col
+        dt_col   = time_col
         time_col = None
 
     bars: list[BacktestBar] = []
     for row in rows:
         if not any(cell.strip() for cell in row):
-            continue  # skip blank rows
+            continue
         try:
             if dt_col is not None:
                 ts = _parse_dt(row[dt_col])
             elif date_col is not None and time_col is not None:
                 d_str = row[date_col].strip()
                 t_str = row[time_col].strip()
-                # Stooq: time is 6-digit HHMMSS with no colons
                 if len(t_str) in (5, 6) and t_str.isdigit():
                     t_str = t_str.zfill(6)
-                combined = f"{d_str} {t_str}"
-                ts = _parse_dt(combined)
+                ts = _parse_dt(f"{d_str} {t_str}")
             elif date_col is not None:
                 ts = _parse_dt(row[date_col])
             else:
@@ -359,29 +533,24 @@ def _rows_to_bars(
             vol   = float(row[vol_col])  if vol_col  is not None else 0.0
 
             bars.append(BacktestBar(
-                symbol=symbol,
-                timestamp=ts,
-                open=open_,
-                high=high,
-                low=low,
-                close=close,
-                volume=vol,
+                symbol=symbol, timestamp=ts,
+                open=open_, high=high, low=low, close=close, volume=vol,
             ))
         except (ValueError, IndexError, TypeError):
-            continue  # skip malformed rows
+            continue
 
     if not bars:
         raise ValueError(
             "No valid OHLC bars could be parsed from the file. "
-            "Check that the file contains 1-minute bar data with Date/Time, High, Low, Close columns."
+            "Check that the file has Date/Time, High, Low, Close columns."
         )
     return bars
 
 
 def _parse_csv_bytes(content: bytes, symbol: str) -> list[BacktestBar]:
-    text = content.decode("utf-8-sig", errors="replace")
+    text   = content.decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text))
-    rows = [r for r in reader if r]
+    rows   = [r for r in reader if r]
     if not rows:
         raise ValueError("CSV file is empty.")
     return _rows_to_bars(rows[0], rows[1:], symbol)
@@ -404,11 +573,8 @@ def _parse_excel_bytes(content: bytes, symbol: str) -> list[BacktestBar]:
     if not rows_raw:
         raise ValueError("Excel file is empty.")
 
-    headers = [str(c) if c is not None else "" for c in rows_raw[0]]
-    data_rows = [
-        [str(c) if c is not None else "" for c in row]
-        for row in rows_raw[1:]
-    ]
+    headers   = [str(c) if c is not None else "" for c in rows_raw[0]]
+    data_rows = [[str(c) if c is not None else "" for c in row] for row in rows_raw[1:]]
     return _rows_to_bars(headers, data_rows, symbol)
 
 
@@ -419,51 +585,25 @@ def parse_bars_from_bytes(content: bytes, filename: str, symbol: str) -> list[Ba
     return _parse_csv_bytes(content, symbol)
 
 
-def _check_bar_granularity(bars: list[BacktestBar]) -> None:
-    """Raise a clear error when the file contains daily bars instead of intraday bars."""
-    if not bars:
-        return
-    sample = bars[:min(30, len(bars))]
-    all_midnight = all(
-        b.timestamp.hour == 0 and b.timestamp.minute == 0 and b.timestamp.second == 0
-        for b in sample
-    )
-    if all_midnight:
-        raise ValueError(
-            "This file contains DAILY bars, but the ORB strategy needs 1-MINUTE intraday bars.\n\n"
-            "When downloading from Stooq you must include &i=1 in the URL:\n"
-            "  https://stooq.com/q/d/l/?s=spy.us&i=1\n\n"
-            "Stooq provides ~5–10 recent trading days of 1-minute data for free.\n"
-            "Make sure the downloaded file has rows like:\n"
-            "  <DATE>,<TIME>,<OPEN>,<HIGH>,<LOW>,<CLOSE>,<VOL>\n"
-            "  20240102,093000,476.00,476.50,475.80,476.20,12345"
-        )
-
-    # Secondary check: if bars span more than 10 calendar days but there are
-    # fewer than 5 bars per day on average, it's almost certainly not 1-min data.
-    et_dates = [_to_et(b.timestamp).date() for b in bars]
-    span_days = (max(et_dates) - min(et_dates)).days
-    unique_days = len(set(et_dates))
-    if span_days > 10 and len(bars) / max(unique_days, 1) < 5:
-        raise ValueError(
-            f"Only {len(bars)} bars found across {unique_days} trading days "
-            f"({span_days} calendar-day span) — this looks like daily or weekly data.\n\n"
-            "The ORB strategy requires 1-minute bars.  Use &i=1 in the Stooq URL:\n"
-            "  https://stooq.com/q/d/l/?s=spy.us&i=1"
-        )
-
+# ── Routing dispatcher ────────────────────────────────────────────────────────
 
 def _run_sync_from_bars(
     symbol: str,
     bars: list[BacktestBar],
     orb_config: OrbConfig,
     risk_config: RiskConfig,
+    lookback: int = 20,
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
-    _check_bar_granularity(bars)
+
     et_dates = [_to_et(b.timestamp).date() for b in bars]
-    return _run_with_bars(symbol, bars, min(et_dates), max(et_dates), orb_config, risk_config)
+    start, end = min(et_dates), max(et_dates)
+
+    if _is_daily_data(bars):
+        return _run_with_daily_bars(symbol, bars, start, end, risk_config, lookback)
+    else:
+        return _run_with_bars(symbol, bars, start, end, orb_config, risk_config)
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -493,8 +633,8 @@ def _compute_stats(
     peak   = Decimal("0")
     max_dd = Decimal("0")
     for point in equity_curve:
-        eq   = Decimal(str(point["equity"]))
-        peak = max(peak, eq)
+        eq     = Decimal(str(point["equity"]))
+        peak   = max(peak, eq)
         max_dd = max(max_dd, peak - eq)
 
     sharpe = 0.0
@@ -550,7 +690,8 @@ async def run_backtest_from_file(
     bars: list[BacktestBar],
     orb_config: OrbConfig,
     risk_config: RiskConfig,
+    lookback: int = 20,
 ) -> BacktestResult:
     return await asyncio.to_thread(
-        _run_sync_from_bars, symbol, bars, orb_config, risk_config,
+        _run_sync_from_bars, symbol, bars, orb_config, risk_config, lookback,
     )
