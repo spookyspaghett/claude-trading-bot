@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,7 +16,7 @@ from data import AggregatedBar, DataFeed
 from executor import OrderExecutor
 from logger import log_error, log_info, setup_logging
 from risk import RiskManager
-from strategy import ORBStrategy
+from strategy import EMAStrategy, ORBStrategy, Strategy
 
 ET = ZoneInfo("America/New_York")
 MARKET_OPEN: time = time(9, 30)
@@ -28,6 +28,39 @@ _ORDER_POLL_INTERVAL = 100
 def _is_market_hours(now: datetime) -> bool:
     t = now.astimezone(ET).time()
     return MARKET_OPEN <= t < MARKET_CLOSE
+
+
+def _build_strategy(config: object) -> tuple[Strategy, str]:
+    """Return (strategy, entry_order_type) based on config."""
+    from config_loader import Config  # local import to avoid circular
+    assert isinstance(config, Config)
+    name = config.strategy.name
+    if name == "ema":
+        strat = EMAStrategy(
+            config=config.strategy.ema,
+            symbols=config.symbols,
+            stop_loss_pct=config.risk.stop_loss_pct,
+        )
+        order_type = config.strategy.ema.entry_order_type
+        log_info(
+            "strategy_selected",
+            strategy="ema",
+            fast=config.strategy.ema.fast_period,
+            slow=config.strategy.ema.slow_period,
+        )
+    else:
+        strat = ORBStrategy(
+            config=config.strategy.orb,
+            symbols=config.symbols,
+            stop_loss_pct=config.risk.stop_loss_pct,
+        )
+        order_type = config.strategy.orb.entry_order_type
+        log_info(
+            "strategy_selected",
+            strategy="orb",
+            opening_range_minutes=config.strategy.orb.opening_range_minutes,
+        )
+    return strat, order_type
 
 
 async def run() -> None:
@@ -49,15 +82,11 @@ async def run() -> None:
         daily_loss_limit_usd=config.risk.daily_loss_limit_usd,
         max_open_positions=config.risk.max_open_positions,
     )
-    strategy = ORBStrategy(
-        config=config.strategy.orb,
-        symbols=config.symbols,
-        stop_loss_pct=config.risk.stop_loss_pct,
-    )
+    strategy, entry_order_type = _build_strategy(config)
     executor = OrderExecutor(
         broker=broker,
         risk=risk,
-        entry_order_type=config.strategy.orb.entry_order_type,
+        entry_order_type=entry_order_type,
     )
     feed = DataFeed(config)
 
@@ -71,7 +100,9 @@ async def run() -> None:
 
     feed_task = asyncio.create_task(feed.run(), name="data-feed")
 
-    tick = 0
+    tick         = 0
+    current_day: date | None = None
+
     try:
         while not shutdown_event.is_set():
             if risk.poll_kill_switch():
@@ -102,6 +133,15 @@ async def run() -> None:
 
             if not feed.connected:
                 continue
+
+            # ── Daily reset at the start of each new trading day ──────────────
+            today = now.date()
+            if today != current_day:
+                if current_day is not None:      # not the very first bar
+                    strategy.reset_day()
+                    risk.reset_day()
+                    log_info("new_trading_day", date=str(today))
+                current_day = today
 
             if isinstance(bar, Bar):
                 sig = strategy.on_bar(bar)

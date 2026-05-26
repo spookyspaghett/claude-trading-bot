@@ -39,9 +39,28 @@ class OrbConfig(BaseModel):
         return v
 
 
+class EmaConfig(BaseModel):
+    fast_period: int = Field(ge=2, le=200, default=9)
+    slow_period: int = Field(ge=3, le=500, default=21)
+    entry_order_type: Literal["limit", "market"] = "market"
+    eod_exit_time: str = "15:50"
+
+    @field_validator("eod_exit_time")
+    @classmethod
+    def validate_time_format(cls, v: str) -> str:
+        parts = v.split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Expected HH:MM, got: {v!r}")
+        hh, mm = parts
+        if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+            raise ValueError(f"Time component out of range: {v!r}")
+        return v
+
+
 class StrategyConfig(BaseModel):
-    name: Literal["orb"]
-    orb: OrbConfig
+    name: Literal["orb", "ema"] = "orb"
+    orb: OrbConfig = OrbConfig(opening_range_minutes=15)
+    ema: EmaConfig = EmaConfig()
 
 
 class Config(BaseModel):

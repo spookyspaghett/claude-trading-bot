@@ -13,7 +13,7 @@ from alpaca.data.models import Bar
 from data import AggregatedBar
 
 if TYPE_CHECKING:
-    from config_loader import OrbConfig
+    from config_loader import EmaConfig, OrbConfig
 
 ET = ZoneInfo("America/New_York")
 MARKET_OPEN: time = time(9, 30)
@@ -169,3 +169,182 @@ class ORBStrategy(Strategy):
 
     def reset_day(self) -> None:
         self._state = {s: _ORBState() for s in self._state}
+
+
+# ── EMA Crossover strategy ────────────────────────────────────────────────────
+
+@dataclass
+class _EMAState:
+    fast_ema: Decimal | None = None
+    slow_ema: Decimal | None = None
+    fast_was_above: bool | None = None   # cross state on the previous bar
+    position: str = ""                   # "" | "BUY" | "SELL"
+    pending_entry: str = ""              # entry to fire next bar after a reversal flat
+    eod_sent: bool = False
+
+
+class EMAStrategy(Strategy):
+    """Exponential Moving Average crossover strategy.
+
+    Fires BUY when the fast EMA crosses above the slow EMA (golden cross)
+    and SELL when it crosses below (death cross).  On a reversal while
+    already in a position, it flattens first and re-enters one bar later
+    (if the cross still holds) to avoid same-bar entry/exit conflicts.
+
+    EMA values persist across days (correct behaviour for a running average).
+    Position flags are reset at the start of each new trading day via
+    reset_day().
+    """
+
+    def __init__(
+        self,
+        config: EmaConfig,
+        symbols: list[str],
+        stop_loss_pct: Decimal,
+    ) -> None:
+        self._fast_k = Decimal("2") / (Decimal(str(config.fast_period)) + 1)
+        self._slow_k = Decimal("2") / (Decimal(str(config.slow_period)) + 1)
+        self._fast_period = config.fast_period
+        self._slow_period = config.slow_period
+        self._stop_loss_pct = stop_loss_pct
+        self._state: dict[str, _EMAState] = {s: _EMAState() for s in symbols}
+        eod_h, eod_m = config.eod_exit_time.split(":")
+        self._eod_time: time = time(int(eod_h), int(eod_m))
+
+    @staticmethod
+    def _to_et(bar: Bar | AggregatedBar) -> datetime:
+        ts = bar.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+        return ts.astimezone(ET)
+
+    def on_bar(self, bar: Bar | AggregatedBar) -> Signal | None:
+        if isinstance(bar, AggregatedBar):
+            return None
+
+        symbol = bar.symbol
+        state  = self._state.get(symbol)
+        if state is None:
+            return None
+
+        bar_et   = self._to_et(bar)
+        bar_time = bar_et.time()
+
+        if not (MARKET_OPEN <= bar_time < MARKET_CLOSE):
+            return None
+
+        close = Decimal(str(bar.close))
+
+        # ── EOD exit ──────────────────────────────────────────────────────────
+        if bar_time >= self._eod_time:
+            if not state.eod_sent and state.position != "":
+                state.eod_sent      = True
+                state.position      = ""
+                state.pending_entry = ""
+                return Signal(
+                    symbol=symbol, direction=Direction.FLAT,
+                    entry_price=close, stop_price=Decimal("0"),
+                    reason="EOD exit",
+                )
+            return None
+
+        # ── Update EMAs ───────────────────────────────────────────────────────
+        if state.fast_ema is None:
+            state.fast_ema      = close
+            state.slow_ema      = close
+            state.fast_was_above = (state.fast_ema > state.slow_ema)
+            return None
+
+        state.fast_ema = close * self._fast_k + state.fast_ema * (Decimal("1") - self._fast_k)
+        state.slow_ema = close * self._slow_k + state.slow_ema * (Decimal("1") - self._slow_k)
+
+        fast_above = state.fast_ema > state.slow_ema
+
+        if state.fast_was_above is None:
+            state.fast_was_above = fast_above
+            return None
+
+        # ── Deferred entry (1 bar after a reversal flat) ──────────────────────
+        if state.pending_entry:
+            entry              = state.pending_entry
+            state.pending_entry = ""
+            wants_long = entry == "BUY"
+            if (wants_long and fast_above) or (not wants_long and not fast_above):
+                state.position = entry
+                direction      = Direction.BUY if wants_long else Direction.SELL
+                stop           = self._stop_price(close, direction)
+                label          = "above" if wants_long else "below"
+                return Signal(
+                    symbol=symbol, direction=direction,
+                    entry_price=close, stop_price=stop,
+                    reason=(
+                        f"EMA({self._fast_period}) {label} EMA({self._slow_period})"
+                        " — re-entry after reversal"
+                    ),
+                )
+            return None
+
+        # ── Detect cross ──────────────────────────────────────────────────────
+        prev_above           = state.fast_was_above
+        state.fast_was_above = fast_above
+
+        if fast_above == prev_above:
+            return None  # no cross this bar
+
+        if fast_above:
+            # Golden cross — fast crossed above slow
+            if state.position == "SELL":
+                state.position      = ""
+                state.pending_entry = "BUY"
+                return Signal(
+                    symbol=symbol, direction=Direction.FLAT,
+                    entry_price=close, stop_price=Decimal("0"),
+                    reason=(
+                        f"EMA({self._fast_period}) crossed above EMA({self._slow_period})"
+                        " — exit short"
+                    ),
+                )
+            if state.position == "":
+                state.position = "BUY"
+                stop = self._stop_price(close, Direction.BUY)
+                return Signal(
+                    symbol=symbol, direction=Direction.BUY,
+                    entry_price=close, stop_price=stop,
+                    reason=f"EMA({self._fast_period}) crossed above EMA({self._slow_period})",
+                )
+        else:
+            # Death cross — fast crossed below slow
+            if state.position == "BUY":
+                state.position      = ""
+                state.pending_entry = "SELL"
+                return Signal(
+                    symbol=symbol, direction=Direction.FLAT,
+                    entry_price=close, stop_price=Decimal("0"),
+                    reason=(
+                        f"EMA({self._fast_period}) crossed below EMA({self._slow_period})"
+                        " — exit long"
+                    ),
+                )
+            if state.position == "":
+                state.position = "SELL"
+                stop = self._stop_price(close, Direction.SELL)
+                return Signal(
+                    symbol=symbol, direction=Direction.SELL,
+                    entry_price=close, stop_price=stop,
+                    reason=f"EMA({self._fast_period}) crossed below EMA({self._slow_period})",
+                )
+
+        return None
+
+    def _stop_price(self, price: Decimal, direction: Direction) -> Decimal:
+        factor = self._stop_loss_pct / Decimal("100")
+        if direction == Direction.BUY:
+            return (price * (Decimal("1") - factor)).quantize(Decimal("0.01"))
+        return (price * (Decimal("1") + factor)).quantize(Decimal("0.01"))
+
+    def reset_day(self) -> None:
+        """Reset intraday position flags. EMA values intentionally persist."""
+        for state in self._state.values():
+            state.position      = ""
+            state.pending_entry = ""
+            state.eod_sent      = False

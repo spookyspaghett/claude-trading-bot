@@ -17,9 +17,15 @@ risk:
   max_open_positions: 4       # Maximum number of concurrent open positions
 
 strategy:
-  name: orb                   # Opening-Range Breakout
+  name: orb                   # "orb" or "ema"
 
   orb:
     opening_range_minutes: 15    # Observe 09:30–09:45 ET to set the range
     entry_order_type: limit      # "limit" or "market"
+    eod_exit_time: "15:50"       # Flatten all positions at this time ET
+
+  ema:
+    fast_period: 9               # Fast EMA period (minutes)
+    slow_period: 21              # Slow EMA period (minutes)
+    entry_order_type: market     # "limit" or "market"  (market recommended for EMA)
     eod_exit_time: "15:50"       # Flatten all positions at this time ET

@@ -63,6 +63,13 @@ export interface ConfigOrb {
   eod_exit_time: string
 }
 
+export interface ConfigEma {
+  fast_period: number
+  slow_period: number
+  entry_order_type: string
+  eod_exit_time: string
+}
+
 export interface Config {
   live: boolean
   symbols: string[]
@@ -70,5 +77,6 @@ export interface Config {
   strategy: {
     name: string
     orb: ConfigOrb
+    ema: ConfigEma
   }
 }
