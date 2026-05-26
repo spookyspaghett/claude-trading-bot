@@ -45,6 +45,10 @@ export default function BotControls({ botStatus, onStatusChange }: Props) {
     }
     try {
       const res = await fetch(`/api/bot/${endpoint}`, { method: 'POST' })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(`Server error ${res.status}${text ? ': ' + text.slice(0, 120) : ''}`)
+      }
       const data = await res.json() as { ok?: boolean; error?: string }
       if (!data.ok && data.error) {
         setError(data.error)

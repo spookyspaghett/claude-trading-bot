@@ -22,13 +22,11 @@ def start() -> dict[str, object]:
     if kill_path.exists():
         kill_path.unlink()
 
-    # Ensure logs directory exists
-    _LOG_PATH.parent.mkdir(exist_ok=True)
-
-    # Open a fresh log file for this run (overwrites the previous crash log)
-    _log_fh = open(_LOG_PATH, "w", buffering=1)  # line-buffered
-
     try:
+        # Ensure logs directory exists and open a fresh log file
+        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _log_fh = open(_LOG_PATH, "w", buffering=1)  # line-buffered
+
         _process = subprocess.Popen(
             [sys.executable, "-u", "main.py"],  # -u = unbuffered stdout
             cwd=str(PROJECT_ROOT),
@@ -36,8 +34,12 @@ def start() -> dict[str, object]:
             stderr=subprocess.STDOUT,  # merge stderr into the same file
         )
     except Exception as exc:
-        _log_fh.close()
-        _log_fh = None
+        if _log_fh is not None:
+            try:
+                _log_fh.close()
+            except OSError:
+                pass
+            _log_fh = None
         return {"ok": False, "error": str(exc)}
 
     return {"ok": True, "pid": _process.pid}

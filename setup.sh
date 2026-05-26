@@ -257,6 +257,7 @@ WorkingDirectory=$SCRIPT_DIR
 ExecStart=$VENV_PYTHON -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=15
 StandardOutput=journal
 StandardError=journal
 Environment=PATH=$SCRIPT_DIR/.venv/bin:/usr/local/bin:/usr/bin:/bin
