@@ -28,6 +28,7 @@ skip()    { echo -e "  ${NC}·${NC}  $* ${CYAN}(up to date)${NC}"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FORCE=false
+CURRENT_USER=$(logname 2>/dev/null || whoami)
 [[ "${1:-}" == "--force" ]] && FORCE=true
 
 # Timestamp file: touched after a successful pip install
@@ -244,7 +245,6 @@ fi
 section "systemd service"
 VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
 SERVICE_FILE="/etc/systemd/system/claude-trading.service"
-CURRENT_USER=$(logname 2>/dev/null || whoami)
 
 sudo tee "$SERVICE_FILE" > /dev/null <<EOF
 [Unit]
