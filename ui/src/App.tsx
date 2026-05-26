@@ -42,49 +42,48 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <header className="bg-slate-900 border-b border-slate-700 px-4 py-3">
-        <div className="max-w-screen-2xl mx-auto flex flex-wrap items-center gap-4">
+      <header className="bg-slate-900 border-b border-slate-700 px-4 py-2">
+        {/* ── Top row: brand + tabs + controls ───────────────────────────── */}
+        <div className="max-w-screen-2xl mx-auto flex items-center gap-3 flex-wrap">
           {/* Brand */}
-          <div className="flex items-center gap-2 mr-2">
-            <TrendingUp size={20} className="text-blue-400" />
-            <span className="font-bold text-slate-100 text-sm tracking-tight">Claude Trading</span>
+          <div className="flex items-center gap-2">
+            <TrendingUp size={18} className="text-blue-400 shrink-0" />
+            <span className="font-bold text-slate-100 text-sm tracking-tight whitespace-nowrap">Claude Trading</span>
           </div>
 
           {/* Tab switcher */}
-          <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
+          <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
             <button
               onClick={() => setTab('dashboard')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                tab === 'dashboard'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-400 hover:text-slate-200'
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                tab === 'dashboard' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <LayoutDashboard size={13} />
+              <LayoutDashboard size={12} />
               Dashboard
             </button>
             <button
               onClick={() => setTab('backtest')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                tab === 'backtest'
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-400 hover:text-slate-200'
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                tab === 'backtest' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <FlaskConical size={13} />
+              <FlaskConical size={12} />
               Backtest
             </button>
           </div>
 
-          {/* Status badges + account info */}
+          {/* Status badges */}
           <StatusBar botStatus={botStatus} wsConnected={wsConnected} account={account} />
 
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Controls */}
-          <BotControls botStatus={botStatus} onStatusChange={refreshBot} />
-          <KillSwitch onTriggered={refreshBot} />
+          {/* Controls — grouped tightly */}
+          <div className="flex items-center gap-2 shrink-0">
+            <BotControls botStatus={botStatus} onStatusChange={refreshBot} />
+            <KillSwitch onTriggered={refreshBot} />
+          </div>
         </div>
       </header>
 
