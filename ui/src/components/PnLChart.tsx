@@ -1,6 +1,7 @@
 import {
   ResponsiveContainer,
-  LineChart,
+  ComposedChart,
+  Area,
   Line,
   XAxis,
   YAxis,
@@ -27,14 +28,31 @@ function formatUsd(val: number) {
 }
 
 export default function PnLChart({ data }: Props) {
-  const lastPnL = data.length ? data[data.length - 1].profit_loss : 0
-  const lineColor = lastPnL >= 0 ? '#4ade80' : '#f87171'
+  const lastPnL   = data.length ? data[data.length - 1].profit_loss : 0
+  const maxPnL    = data.length ? Math.max(...data.map(d => d.profit_loss)) : 0
+  const minPnL    = data.length ? Math.min(...data.map(d => d.profit_loss)) : 0
+  const isUp      = lastPnL >= 0
+  const lineColor = isUp ? '#4ade80' : '#f87171'
+
+  // Split data into positive and negative areas for two-color fill at zero
+  const chartData = data.map(d => ({
+    ...d,
+    pos: d.profit_loss > 0 ? d.profit_loss : 0,
+    neg: d.profit_loss < 0 ? d.profit_loss : 0,
+  }))
 
   return (
     <div className="bg-slate-900 rounded-xl border border-slate-700 flex flex-col">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-200">Intraday P&amp;L</h2>
-        <span className={`text-sm font-bold ${lastPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+        <div>
+          <h2 className="text-sm font-semibold text-slate-200">Intraday P&amp;L</h2>
+          {data.length > 0 && (
+            <p className="text-xs text-slate-500 mt-0.5">
+              High {formatUsd(maxPnL)} · Low {formatUsd(minPnL)}
+            </p>
+          )}
+        </div>
+        <span className={`text-lg font-bold tabular-nums ${isUp ? 'text-green-400' : 'text-red-400'}`}>
           {lastPnL >= 0 ? '+' : ''}{formatUsd(lastPnL)}
         </span>
       </div>
@@ -44,9 +62,19 @@ export default function PnLChart({ data }: Props) {
           No data yet — starts at market open
         </div>
       ) : (
-        <div className="p-2 flex-1 min-h-0" style={{ height: 220 }}>
+        <div className="p-2" style={{ height: 260 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+            <ComposedChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+              <defs>
+                <linearGradient id="pnlGradPos" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#4ade80" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#4ade80" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="pnlGradNeg" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#f87171" stopOpacity={0.02} />
+                  <stop offset="95%" stopColor="#f87171" stopOpacity={0.3} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
               <XAxis
                 dataKey="timestamp"
@@ -61,15 +89,35 @@ export default function PnLChart({ data }: Props) {
                 tick={{ fill: '#64748b', fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
-                width={56}
+                width={62}
               />
               <Tooltip
-                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
                 labelStyle={{ color: '#94a3b8', fontSize: 11 }}
                 labelFormatter={v => formatTime(v as number)}
                 formatter={(v: number) => [formatUsd(v), 'P&L']}
               />
-              <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 2" />
+              {/* Zero baseline — more visible */}
+              <ReferenceLine y={0} stroke="#475569" strokeWidth={1.5} />
+              {/* Green fill above zero */}
+              <Area
+                type="monotone"
+                dataKey="pos"
+                stroke="none"
+                fill="url(#pnlGradPos)"
+                isAnimationActive={false}
+                baseValue={0}
+              />
+              {/* Red fill below zero */}
+              <Area
+                type="monotone"
+                dataKey="neg"
+                stroke="none"
+                fill="url(#pnlGradNeg)"
+                isAnimationActive={false}
+                baseValue={0}
+              />
+              {/* Main P&L line on top */}
               <Line
                 type="monotone"
                 dataKey="profit_loss"
@@ -77,8 +125,9 @@ export default function PnLChart({ data }: Props) {
                 strokeWidth={2}
                 dot={false}
                 activeDot={{ r: 4, fill: lineColor }}
+                isAnimationActive={false}
               />
-            </LineChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       )}

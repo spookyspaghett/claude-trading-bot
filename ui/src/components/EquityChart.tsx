@@ -6,6 +6,7 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
+  ReferenceLine,
 } from 'recharts'
 import type { EquityPoint } from '../types'
 
@@ -22,21 +23,30 @@ function formatUsd(val: number) {
 }
 
 export default function EquityChart({ data }: Props) {
-  const first = data[0]?.equity ?? 0
-  const last = data[data.length - 1]?.equity ?? 0
-  const change = last - first
-  const isUp = change >= 0
+  const first      = data[0]?.equity ?? 0
+  const last       = data[data.length - 1]?.equity ?? 0
+  const change     = last - first
+  const returnPct  = first > 0 ? ((change / first) * 100).toFixed(2) : '0.00'
+  const isUp       = change >= 0
+  const color      = isUp ? '#4ade80' : '#f87171'
 
   return (
     <div className="bg-slate-900 rounded-xl border border-slate-700 flex flex-col">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-200">Account Equity (30d)</h2>
+        <div>
+          <h2 className="text-sm font-semibold text-slate-200">Account Equity (30d)</h2>
+          {data.length > 0 && (
+            <p className="text-xs text-slate-500 mt-0.5">
+              Start {formatUsd(first)} · {data.length} days
+            </p>
+          )}
+        </div>
         {data.length > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-bold text-slate-200">{formatUsd(last)}</span>
-            <span className={`text-xs font-medium ${isUp ? 'text-green-400' : 'text-red-400'}`}>
-              {isUp ? '+' : ''}{formatUsd(change)}
-            </span>
+          <div className="text-right">
+            <p className="text-lg font-bold text-slate-100 tabular-nums">{formatUsd(last)}</p>
+            <p className={`text-xs font-semibold tabular-nums ${isUp ? 'text-green-400' : 'text-red-400'}`}>
+              {isUp ? '+' : ''}{formatUsd(change)} ({isUp ? '+' : ''}{returnPct}%)
+            </p>
           </div>
         )}
       </div>
@@ -46,13 +56,13 @@ export default function EquityChart({ data }: Props) {
           No history available
         </div>
       ) : (
-        <div className="p-2 flex-1 min-h-0" style={{ height: 220 }}>
+        <div className="p-2" style={{ height: 260 }}>
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={isUp ? '#4ade80' : '#f87171'} stopOpacity={0.2} />
-                  <stop offset="95%" stopColor={isUp ? '#4ade80' : '#f87171'} stopOpacity={0} />
+                  <stop offset="5%"  stopColor={color} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={color} stopOpacity={0.02} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
@@ -69,23 +79,30 @@ export default function EquityChart({ data }: Props) {
                 tick={{ fill: '#64748b', fontSize: 11 }}
                 tickLine={false}
                 axisLine={false}
-                width={48}
+                width={52}
                 domain={['auto', 'auto']}
               />
               <Tooltip
-                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
                 labelStyle={{ color: '#94a3b8', fontSize: 11 }}
                 labelFormatter={v => formatDate(v as number)}
                 formatter={(v: number) => [formatUsd(v), 'Equity']}
               />
+              {/* Starting equity baseline */}
+              <ReferenceLine
+                y={first}
+                stroke="#475569"
+                strokeDasharray="4 2"
+                label={{ value: 'Start', fill: '#475569', fontSize: 10, position: 'insideTopRight' }}
+              />
               <Area
                 type="monotone"
                 dataKey="equity"
-                stroke={isUp ? '#4ade80' : '#f87171'}
+                stroke={color}
                 strokeWidth={2}
                 fill="url(#equityGrad)"
                 dot={false}
-                activeDot={{ r: 4 }}
+                activeDot={{ r: 4, fill: color }}
               />
             </AreaChart>
           </ResponsiveContainer>

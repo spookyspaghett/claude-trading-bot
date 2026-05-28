@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react'
-import { Play, Upload, ExternalLink } from 'lucide-react'
+import { Play, Upload, ExternalLink, TrendingDown } from 'lucide-react'
 import {
-  ResponsiveContainer, AreaChart, Area,
+  ResponsiveContainer,
+  AreaChart, Area,
+  BarChart, Bar, Cell,
   XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine,
 } from 'recharts'
 
@@ -9,7 +11,7 @@ interface BacktestStats {
   total_trades: number
   winning_trades: number
   losing_trades: number
-  win_rate: number
+  win_rate: number       // already ×100 from the API (e.g. 52.3)
   avg_win: string
   avg_loss: string
   profit_factor: number
@@ -44,27 +46,26 @@ type DataSource = 'alpaca' | 'upload'
 
 const SYMBOLS = ['SPY', 'AAPL', 'MSFT', 'NVDA', 'QQQ', 'TSLA', 'AMZN', 'META']
 
-function StatCard({
-  label, value, sub, positive,
-}: { label: string; value: string; sub?: string; positive?: boolean }) {
-  const color = positive === undefined ? 'text-slate-100'
-    : positive ? 'text-green-400' : 'text-red-400'
-  return (
-    <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-      <p className="text-xs text-slate-500 mb-1">{label}</p>
-      <p className={`text-xl font-bold ${color}`}>{value}</p>
-      {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
-    </div>
-  )
+// ── Formatters ────────────────────────────────────────────────────────────────
+
+function fmtUsd(val: string | number, signed = false) {
+  const n = typeof val === 'string' ? parseFloat(val) : val
+  const abs = Math.abs(n).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+  if (!signed) return (n < 0 ? '-' : '') + abs
+  return (n >= 0 ? '+' : '-') + abs
+}
+
+function fmtPrice(val: string | null | undefined) {
+  if (!val) return '—'
+  return `$${parseFloat(val).toFixed(2)}`
+}
+
+function fmtPct(n: number) {
+  return (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
 }
 
 function formatDate(ts: number) {
   return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
-
-function fmtUsd(val: string) {
-  const n = parseFloat(val)
-  return (n >= 0 ? '+' : '') + n.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
 }
 
 function fmtTime(iso: string) {
@@ -75,6 +76,24 @@ function fmtTime(iso: string) {
   })
 }
 
+// ── Stat card ─────────────────────────────────────────────────────────────────
+
+function StatCard({
+  label, value, sub, positive, large,
+}: { label: string; value: string; sub?: string; positive?: boolean; large?: boolean }) {
+  const color = positive === undefined ? 'text-slate-100'
+    : positive ? 'text-green-400' : 'text-red-400'
+  return (
+    <div className="bg-slate-800 rounded-xl p-4 border border-slate-700/80">
+      <p className="text-xs text-slate-500 mb-1.5 uppercase tracking-wide">{label}</p>
+      <p className={`font-bold ${large ? 'text-2xl' : 'text-xl'} ${color} tabular-nums`}>{value}</p>
+      {sub && <p className="text-xs text-slate-500 mt-1">{sub}</p>}
+    </div>
+  )
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export default function BacktestPanel() {
   const today = new Date()
   const thirtyDaysAgo = new Date(today)
@@ -82,12 +101,10 @@ export default function BacktestPanel() {
 
   const [source, setSource] = useState<DataSource>('upload')
 
-  // Alpaca mode
   const [symbol, setSymbol] = useState('SPY')
   const [startDate, setStartDate] = useState(thirtyDaysAgo.toISOString().slice(0, 10))
   const [endDate, setEndDate] = useState(today.toISOString().slice(0, 10))
 
-  // Upload mode
   const [uploadSymbol, setUploadSymbol] = useState('SPY')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [lookbackDays, setLookbackDays] = useState(20)
@@ -95,7 +112,6 @@ export default function BacktestPanel() {
   const [trendMa, setTrendMa] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Shared
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
@@ -143,14 +159,35 @@ export default function BacktestPanel() {
     }
   }
 
-  const pnlPositive  = result ? parseFloat(result.stats.total_pnl) >= 0 : true
-  const equityStart  = result?.equity_curve[0]?.equity ?? 100000
-  const equityColor  = pnlPositive ? '#4ade80' : '#f87171'
-  const isDaily      = result?.strategy_used.includes('daily') ?? false
+  // ── Derived chart data ─────────────────────────────────────────────────────
+
+  const equityStart = result?.equity_curve[0]?.equity ?? 100_000
+  const equityEnd   = result?.equity_curve[result.equity_curve.length - 1]?.equity ?? equityStart
+  const returnPct   = equityStart > 0 ? ((equityEnd - equityStart) / equityStart * 100) : 0
+  const pnlPositive = returnPct >= 0
+  const equityColor = pnlPositive ? '#4ade80' : '#f87171'
+  const isDaily     = result?.strategy_used.includes('daily') ?? false
+
+  // Equity + drawdown overlay data
+  const equityWithDd = result ? (() => {
+    let peak = result.equity_curve[0]?.equity ?? equityStart
+    return result.equity_curve.map(p => {
+      peak = Math.max(peak, p.equity)
+      const dd = peak > 0 ? ((p.equity - peak) / peak * 100) : 0
+      return { ...p, drawdown: dd }
+    })
+  })() : []
+
+  // Per-trade P&L bars
+  const tradeBarData = result?.trades.map((t, i) => ({
+    trade: i + 1,
+    pnl: parseFloat(t.pnl),
+    label: `#${i + 1} ${t.symbol} ${t.direction} @ ${fmtPrice(t.entry_price)}`,
+  })) ?? []
 
   return (
     <div className="space-y-4">
-      {/* ── Controls ─────────────────────────────────────────────────────── */}
+      {/* ── Controls ──────────────────────────────────────────────────────── */}
       <div className="bg-slate-900 rounded-xl border border-slate-700 p-4 space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <h2 className="text-sm font-semibold text-slate-200">Backtest</h2>
@@ -175,17 +212,12 @@ export default function BacktestPanel() {
           </div>
         </div>
 
-        {/* ── Upload mode ────────────────────────────────────────────────── */}
         {source === 'upload' && (
           <div className="space-y-3">
-            {/* Stooq quick-download links */}
             <div className="rounded-lg bg-slate-800 border border-slate-600 p-3 text-xs text-slate-400 space-y-2">
               <p className="text-slate-300 font-semibold">Free historical data — no account needed</p>
-              <div className="space-y-1 text-slate-400">
-                <p>
-                  <span className="text-slate-300 font-medium">Daily bars</span>
-                  {' '}— any stock, years of history. Click to download:
-                </p>
+              <div className="space-y-1">
+                <p><span className="text-slate-300 font-medium">Daily bars</span> — any stock, years of history:</p>
                 <div className="flex flex-wrap gap-1.5 mt-1">
                   {[['SPY','spy'],['AAPL','aapl'],['MSFT','msft'],['NVDA','nvda'],['QQQ','qqq'],['TSLA','tsla']].map(([label, s]) => (
                     <a key={label}
@@ -198,11 +230,8 @@ export default function BacktestPanel() {
                   ))}
                 </div>
               </div>
-              <div className="space-y-1 text-slate-400 pt-1 border-t border-slate-700">
-                <p>
-                  <span className="text-slate-300 font-medium">1-minute bars</span>
-                  {' '}— last ~5–10 trading days only (for ORB strategy):
-                </p>
+              <div className="space-y-1 pt-1 border-t border-slate-700">
+                <p><span className="text-slate-300 font-medium">1-minute bars</span> — last ~5–10 trading days (ORB strategy):</p>
                 <div className="flex flex-wrap gap-1.5 mt-1">
                   {[['SPY','spy'],['AAPL','aapl'],['MSFT','msft'],['NVDA','nvda']].map(([label, s]) => (
                     <a key={label}
@@ -216,12 +245,11 @@ export default function BacktestPanel() {
                 </div>
               </div>
               <p className="text-slate-500 pt-1 border-t border-slate-700">
-                The strategy is chosen automatically: daily files → N-day Donchian Breakout · 1-minute files → ORB
+                Strategy is chosen automatically: daily files → Donchian Breakout · 1-minute files → ORB
               </p>
             </div>
 
             <div className="flex flex-wrap gap-3 items-end">
-              {/* Symbol */}
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Symbol</label>
                 <input
@@ -231,60 +259,39 @@ export default function BacktestPanel() {
                   placeholder="SPY"
                 />
               </div>
-
-              {/* Lookback */}
               <div>
                 <label className="text-xs text-slate-500 block mb-1">
-                  Lookback days
-                  <span className="ml-1 text-slate-600">(daily strategy)</span>
+                  Lookback days <span className="text-slate-600">(daily)</span>
                 </label>
-                <input
-                  type="number"
-                  min={2} max={200} step={1}
+                <input type="number" min={2} max={200} step={1}
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500"
                   value={lookbackDays}
                   onChange={e => setLookbackDays(Math.max(2, parseInt(e.target.value) || 20))}
                 />
               </div>
-
-              {/* Trend MA filter */}
               <div>
                 <label className="text-xs text-slate-500 block mb-1">
-                  Trend filter MA
-                  <span className="ml-1 text-slate-600">(0 = off)</span>
+                  Trend MA <span className="text-slate-600">(0 = off)</span>
                 </label>
-                <input
-                  type="number"
-                  min={0} max={500} step={1}
+                <input type="number" min={0} max={500} step={1}
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500"
                   value={trendMa}
                   onChange={e => setTrendMa(Math.max(0, parseInt(e.target.value) || 0))}
                 />
               </div>
-
-              {/* Long only */}
               <div className="flex flex-col justify-end pb-0.5">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={longOnly}
-                    onChange={e => setLongOnly(e.target.checked)}
+                  <input type="checkbox" checked={longOnly} onChange={e => setLongOnly(e.target.checked)}
                     className="w-4 h-4 accent-blue-500"
                   />
                   <span className="text-sm text-slate-300 font-medium">Long only</span>
                 </label>
                 <p className="text-xs text-slate-600 mt-0.5 ml-6">No short trades</p>
               </div>
-
-              {/* File picker */}
               <div>
                 <label className="text-xs text-slate-500 block mb-1">CSV or Excel file</label>
                 <div className="flex items-center gap-2">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".csv,.xlsx,.xls"
-                    className="hidden"
+                  <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls" className="hidden"
                     onChange={e => { setUploadFile(e.target.files?.[0] ?? null); setResult(null) }}
                   />
                   <button
@@ -295,13 +302,10 @@ export default function BacktestPanel() {
                     {uploadFile ? uploadFile.name : 'Choose file…'}
                   </button>
                   {uploadFile && (
-                    <span className="text-xs text-slate-500">
-                      {(uploadFile.size / 1024).toFixed(0)} KB
-                    </span>
+                    <span className="text-xs text-slate-500">{(uploadFile.size / 1024).toFixed(0)} KB</span>
                   )}
                 </div>
               </div>
-
               <button
                 onClick={() => void runUpload()}
                 disabled={loading || !uploadFile}
@@ -314,15 +318,12 @@ export default function BacktestPanel() {
           </div>
         )}
 
-        {/* ── Alpaca mode ─────────────────────────────────────────────────── */}
         {source === 'alpaca' && (
           <div className="space-y-2">
             <div className="flex flex-wrap gap-3 items-end">
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Symbol</label>
-                <select
-                  value={symbol}
-                  onChange={e => setSymbol(e.target.value)}
+                <select value={symbol} onChange={e => setSymbol(e.target.value)}
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
                 >
                   {SYMBOLS.map(s => <option key={s} value={s}>{s}</option>)}
@@ -347,9 +348,7 @@ export default function BacktestPanel() {
                 {loading ? 'Running…' : 'Run Backtest'}
               </button>
             </div>
-            <p className="text-xs text-slate-600">
-              Requires an Alpaca SIP data subscription. Max range: 180 days.
-            </p>
+            <p className="text-xs text-slate-600">Requires Alpaca SIP data. Max range: 180 days.</p>
           </div>
         )}
 
@@ -368,8 +367,8 @@ export default function BacktestPanel() {
 
       {result && (
         <>
-          {/* Strategy badge */}
-          <div className="flex items-center gap-2">
+          {/* Strategy badge + return summary */}
+          <div className="flex items-center gap-3 flex-wrap">
             <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
               isDaily
                 ? 'bg-purple-900/40 text-purple-300 border-purple-700/50'
@@ -377,114 +376,195 @@ export default function BacktestPanel() {
             }`}>
               {result.strategy_used}
             </span>
+            <span className={`text-sm font-bold tabular-nums ${pnlPositive ? 'text-green-400' : 'text-red-400'}`}>
+              {fmtPct(returnPct)} return on $100k
+            </span>
           </div>
 
-          {/* ── Stats cards ──────────────────────────────────────────────── */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <StatCard label="Total Trades" value={String(result.stats.total_trades)} />
+          {/* ── Stats grid ────────────────────────────────────────────────── */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <StatCard
+              label="Net Return"
+              value={fmtPct(returnPct)}
+              sub={fmtUsd(result.stats.total_pnl, true)}
+              positive={pnlPositive}
+              large
+            />
             <StatCard
               label="Win Rate"
               value={`${result.stats.win_rate}%`}
-              sub={`${result.stats.winning_trades}W / ${result.stats.losing_trades}L`}
+              sub={`${result.stats.winning_trades}W / ${result.stats.losing_trades}L of ${result.stats.total_trades}`}
               positive={result.stats.win_rate >= 50}
             />
             <StatCard
-              label="Total P&L"
-              value={fmtUsd(result.stats.total_pnl)}
-              positive={parseFloat(result.stats.total_pnl) >= 0}
-            />
-            <StatCard
               label="Profit Factor"
-              value={result.stats.profit_factor === Infinity ? '∞' : String(result.stats.profit_factor)}
-              sub="gross profit / gross loss"
+              value={result.stats.profit_factor >= 999 ? '∞' : result.stats.profit_factor.toFixed(2)}
+              sub="gross profit ÷ gross loss"
               positive={result.stats.profit_factor >= 1}
             />
-            <StatCard label="Max Drawdown" value={`-$${result.stats.max_drawdown}`} positive={false} />
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard label="Avg Win"  value={fmtUsd(result.stats.avg_win)}  positive={true} />
-            <StatCard label="Avg Loss" value={`-$${result.stats.avg_loss}`}  positive={false} />
             <StatCard
               label="Sharpe Ratio"
-              value={String(result.stats.sharpe_ratio)}
-              sub="annualised, daily returns"
-              positive={result.stats.sharpe_ratio >= 0}
+              value={result.stats.sharpe_ratio.toFixed(2)}
+              sub="annualised, daily rets"
+              positive={result.stats.sharpe_ratio >= 1}
             />
             <StatCard
-              label="Period"
-              value={`${result.start_date} → ${result.end_date}`}
-              sub={result.symbol}
+              label="Max Drawdown"
+              value={`-${fmtUsd(result.stats.max_drawdown)}`}
+              positive={false}
+            />
+            <StatCard
+              label="Avg Win / Loss"
+              value={`${fmtUsd(result.stats.avg_win, true)}`}
+              sub={`Loss: -${fmtUsd(result.stats.avg_loss)}`}
+              positive={parseFloat(result.stats.avg_win) >= parseFloat(result.stats.avg_loss)}
             />
           </div>
 
-          {/* ── Equity curve ─────────────────────────────────────────────── */}
+          {/* ── Equity curve + drawdown overlay ───────────────────────────── */}
           <div className="bg-slate-900 rounded-xl border border-slate-700 p-4">
-            <h3 className="text-sm font-semibold text-slate-200 mb-3">Backtest Equity Curve</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-slate-200">Equity Curve</h3>
+              <span className="text-xs text-slate-500">Starting $100k</span>
+            </div>
             {result.equity_curve.length === 0 ? (
               <p className="text-slate-600 text-sm text-center py-8">No trades in this period.</p>
             ) : (
-              <div style={{ height: 240 }}>
+              <div style={{ height: 300 }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={result.equity_curve} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+                  <AreaChart data={equityWithDd} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
                     <defs>
                       <linearGradient id="btGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%"  stopColor={equityColor} stopOpacity={0.2} />
-                        <stop offset="95%" stopColor={equityColor} stopOpacity={0} />
+                        <stop offset="5%"  stopColor={equityColor} stopOpacity={0.25} />
+                        <stop offset="95%" stopColor={equityColor} stopOpacity={0.02} />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                     <XAxis dataKey="timestamp" tickFormatter={formatDate}
                       tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} axisLine={false} minTickGap={40} />
-                    <YAxis tickFormatter={v => `$${((v as number) / 1000).toFixed(0)}k`}
+                    <YAxis yAxisId="equity"
+                      tickFormatter={v => `$${((v as number) / 1000).toFixed(0)}k`}
                       tick={{ fill: '#64748b', fontSize: 11 }} tickLine={false} axisLine={false} width={52} domain={['auto', 'auto']} />
-                    <Tooltip
-                      contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
-                      labelFormatter={v => formatDate(v as number)}
-                      formatter={(v: number) => [v.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }), 'Equity']}
+                    <YAxis yAxisId="dd" orientation="right"
+                      tickFormatter={v => `${(v as number).toFixed(0)}%`}
+                      tick={{ fill: '#94a3b8', fontSize: 10 }} tickLine={false} axisLine={false} width={38}
+                      domain={['auto', 0]}
                     />
-                    <ReferenceLine y={equityStart} stroke="#475569" strokeDasharray="4 2" />
-                    <Area type="monotone" dataKey="equity" stroke={equityColor} strokeWidth={2}
-                      fill="url(#btGrad)" dot={false} activeDot={{ r: 4 }} />
+                    <Tooltip
+                      contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
+                      labelFormatter={v => formatDate(v as number)}
+                      formatter={(v: number, name: string) => {
+                        if (name === 'drawdown') return [`${v.toFixed(2)}%`, 'Drawdown']
+                        return [v.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }), 'Equity']
+                      }}
+                    />
+                    <ReferenceLine yAxisId="equity" y={equityStart} stroke="#475569" strokeDasharray="4 2"
+                      label={{ value: 'Start', fill: '#475569', fontSize: 10, position: 'insideTopRight' }}
+                    />
+                    <Area yAxisId="equity" type="monotone" dataKey="equity"
+                      stroke={equityColor} strokeWidth={2} fill="url(#btGrad)" dot={false} activeDot={{ r: 4 }} />
+                    <Area yAxisId="dd" type="monotone" dataKey="drawdown"
+                      stroke="#f97316" strokeWidth={1} fill="#f9731615" dot={false} />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
             )}
+            {/* Drawdown legend */}
+            <div className="flex items-center gap-4 mt-2 text-xs text-slate-500">
+              <span className="flex items-center gap-1.5">
+                <span className="w-3 h-0.5 rounded" style={{ background: equityColor, display: 'inline-block' }} />
+                Equity
+              </span>
+              <span className="flex items-center gap-1.5">
+                <TrendingDown size={11} className="text-orange-400" />
+                <span>Drawdown % (right axis)</span>
+              </span>
+            </div>
           </div>
 
-          {/* ── Trade log ────────────────────────────────────────────────── */}
+          {/* ── Per-trade P&L bar chart ────────────────────────────────────── */}
+          {tradeBarData.length > 0 && (
+            <div className="bg-slate-900 rounded-xl border border-slate-700 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold text-slate-200">Trade P&amp;L — per trade</h3>
+                <span className="text-xs text-slate-500">{tradeBarData.length} trades</span>
+              </div>
+              <div style={{ height: 180 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={tradeBarData} margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                    <XAxis dataKey="trade" tick={{ fill: '#64748b', fontSize: 10 }} tickLine={false} axisLine={false}
+                      label={{ value: 'Trade #', fill: '#475569', fontSize: 10, position: 'insideBottom', offset: -2 }}
+                    />
+                    <YAxis tickFormatter={v => `$${(v as number).toFixed(0)}`}
+                      tick={{ fill: '#64748b', fontSize: 10 }} tickLine={false} axisLine={false} width={56} />
+                    <Tooltip
+                      contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: 8 }}
+                      labelStyle={{ color: '#94a3b8', fontSize: 11 }}
+                      formatter={(v: number, _name: string, props: { payload?: { label?: string } }) => [
+                        v.toLocaleString('en-US', { style: 'currency', currency: 'USD' }),
+                        props.payload?.label ?? 'P&L',
+                      ]}
+                    />
+                    <ReferenceLine y={0} stroke="#475569" strokeWidth={1} />
+                    <Bar dataKey="pnl" radius={[2, 2, 0, 0]} maxBarSize={24}>
+                      {tradeBarData.map((entry, i) => (
+                        <Cell key={i} fill={entry.pnl >= 0 ? '#4ade80' : '#f87171'} fillOpacity={0.85} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* ── Trade log ─────────────────────────────────────────────────── */}
           <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-700">
-              <h3 className="text-sm font-semibold text-slate-200">Trade Log ({result.trades.length} trades)</h3>
+            <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-200">Trade Log</h3>
+              <span className="text-xs text-slate-500">{result.trades.length} trades</span>
             </div>
             <div className="overflow-auto max-h-80">
               <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-slate-500 uppercase tracking-wider">
+                <thead className="sticky top-0 bg-slate-900 z-10">
+                  <tr className="text-slate-500 uppercase tracking-wider border-b border-slate-800">
+                    <th className="px-4 py-2 text-left">#</th>
                     <th className="px-4 py-2 text-left">Dir</th>
-                    <th className="px-4 py-2 text-left">Entry</th>
+                    <th className="px-4 py-2 text-left">Entry time</th>
                     <th className="px-4 py-2 text-right">Entry $</th>
-                    <th className="px-4 py-2 text-left">Exit</th>
+                    <th className="px-4 py-2 text-left">Exit time</th>
                     <th className="px-4 py-2 text-right">Exit $</th>
                     <th className="px-4 py-2 text-right">Qty</th>
-                    <th className="px-4 py-2 text-center">Reason</th>
-                    <th className="px-4 py-2 text-right">P&L</th>
+                    <th className="px-4 py-2 text-center">Exit</th>
+                    <th className="px-4 py-2 text-right">P&amp;L</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
                   {result.trades.map((t, i) => {
                     const pnl = parseFloat(t.pnl)
                     return (
-                      <tr key={i} className="hover:bg-slate-800/40">
-                        <td className={`px-4 py-2 font-semibold ${t.direction === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>{t.direction}</td>
-                        <td className="px-4 py-2 text-slate-400">{fmtTime(t.entry_time)}</td>
-                        <td className="px-4 py-2 text-right text-slate-300">${t.entry_price}</td>
-                        <td className="px-4 py-2 text-slate-400">{t.exit_time ? fmtTime(t.exit_time) : '—'}</td>
-                        <td className="px-4 py-2 text-right text-slate-300">{t.exit_price ? `$${t.exit_price}` : '—'}</td>
-                        <td className="px-4 py-2 text-right text-slate-400">{t.qty}</td>
-                        <td className="px-4 py-2 text-center text-slate-500">{t.exit_reason}</td>
-                        <td className={`px-4 py-2 text-right font-semibold ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                          {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(2)}
+                      <tr key={i} className="hover:bg-slate-800/40 transition-colors">
+                        <td className="px-4 py-2 text-slate-600 tabular-nums">{i + 1}</td>
+                        <td className={`px-4 py-2 font-bold ${t.direction === 'BUY' ? 'text-green-400' : 'text-red-400'}`}>
+                          {t.direction}
+                        </td>
+                        <td className="px-4 py-2 text-slate-400 tabular-nums">{fmtTime(t.entry_time)}</td>
+                        <td className="px-4 py-2 text-right text-slate-300 tabular-nums">{fmtPrice(t.entry_price)}</td>
+                        <td className="px-4 py-2 text-slate-400 tabular-nums">{t.exit_time ? fmtTime(t.exit_time) : '—'}</td>
+                        <td className="px-4 py-2 text-right text-slate-300 tabular-nums">{fmtPrice(t.exit_price)}</td>
+                        <td className="px-4 py-2 text-right text-slate-400 tabular-nums">{t.qty}</td>
+                        <td className="px-4 py-2 text-center">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            t.exit_reason === 'stop' ? 'bg-red-900/40 text-red-400' :
+                            t.exit_reason === 'eod' || t.exit_reason === 'eod_forced' ? 'bg-slate-800 text-slate-400' :
+                            t.exit_reason === 'channel' ? 'bg-purple-900/40 text-purple-400' :
+                            'bg-slate-800 text-slate-500'
+                          }`}>
+                            {t.exit_reason}
+                          </span>
+                        </td>
+                        <td className={`px-4 py-2 text-right font-bold tabular-nums ${pnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {pnl >= 0 ? '+' : '-'}${Math.abs(pnl).toFixed(2)}
                         </td>
                       </tr>
                     )
