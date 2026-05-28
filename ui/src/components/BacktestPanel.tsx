@@ -161,7 +161,7 @@ export default function BacktestPanel() {
 
   // ── Derived chart data ─────────────────────────────────────────────────────
 
-  const equityStart = result?.equity_curve[0]?.equity ?? 100_000
+  const equityStart = result?.equity_curve[0]?.equity ?? 500_000
   const equityEnd   = result?.equity_curve[result.equity_curve.length - 1]?.equity ?? equityStart
   const returnPct   = equityStart > 0 ? ((equityEnd - equityStart) / equityStart * 100) : 0
   const pnlPositive = returnPct >= 0
@@ -386,7 +386,7 @@ export default function BacktestPanel() {
             <StatCard
               label="Net Return"
               value={fmtPct(returnPct)}
-              sub={fmtUsd(result.stats.total_pnl, true)}
+              sub={`${fmtUsd(result.stats.total_pnl, true)} on $500k`}
               positive={pnlPositive}
               large
             />
@@ -425,7 +425,7 @@ export default function BacktestPanel() {
           <div className="bg-slate-900 rounded-xl border border-slate-700 p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-slate-200">Equity Curve</h3>
-              <span className="text-xs text-slate-500">Starting $100k</span>
+              <span className="text-xs text-slate-500">Starting $500k</span>
             </div>
             {result.equity_curve.length === 0 ? (
               <p className="text-slate-600 text-sm text-center py-8">No trades in this period.</p>

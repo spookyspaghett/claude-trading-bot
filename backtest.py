@@ -127,7 +127,7 @@ def _run_with_bars(
         days.setdefault(d, []).append(bar)
 
     trades: list[Trade] = []
-    equity = Decimal("100000")
+    equity = Decimal("500000")
     equity_curve: list[dict[str, object]] = []
 
     for trading_day in sorted(days.keys()):
@@ -283,7 +283,7 @@ def _run_with_daily_bars(
     )
 
     trades: list[Trade] = []
-    equity = Decimal("100000")
+    equity = Decimal("500000")
     equity_curve: list[dict[str, object]] = []
     open_trade: Trade | None = None
 
