@@ -15,6 +15,7 @@ from config_loader import load_config
 from data import AggregatedBar, DataFeed
 from executor import OrderExecutor
 from logger import log_error, log_info, setup_logging
+from research import PremarketResearch
 from risk import RiskManager
 from strategy import EMAStrategy, ORBStrategy, Strategy
 
@@ -22,7 +23,8 @@ ET = ZoneInfo("America/New_York")
 MARKET_OPEN: time = time(9, 30)
 MARKET_CLOSE: time = time(16, 0)
 
-_ORDER_POLL_INTERVAL = 100
+_ORDER_POLL_INTERVAL = 100    # poll orders every ~10 s
+_POSITION_POLL_INTERVAL = 600 # check positions for loser cut every ~60 s
 
 
 def _is_market_hours(now: datetime) -> bool:
@@ -87,7 +89,18 @@ async def run() -> None:
         broker=broker,
         risk=risk,
         entry_order_type=entry_order_type,
+        trailing_stop_pct=float(config.risk.trailing_stop_pct),
+        loser_cut_pct=config.risk.loser_cut_pct,
+        enable_claude_filter=config.ai.enable_claude_filter,
     )
+
+    # Pre-market research: score each symbol before the trading loop
+    if config.ai.enable_research:
+        research = PremarketResearch()
+        symbol_research = await research.run(config.symbols)
+        executor.set_research(symbol_research)
+        log_info("research_complete", symbols_scored=list(symbol_research.keys()))
+
     feed = DataFeed(config)
 
     shutdown_event = asyncio.Event()
@@ -124,6 +137,8 @@ async def run() -> None:
                 tick += 1
                 if tick % _ORDER_POLL_INTERVAL == 0:
                     await executor.poll_order_status()
+                if tick % _POSITION_POLL_INTERVAL == 0:
+                    await executor.poll_positions()
                 continue
 
             now = datetime.now(tz=ET)
@@ -138,6 +153,7 @@ async def run() -> None:
             today = now.date()
             if today != current_day:
                 if current_day is not None:      # not the very first bar
+                    executor.end_of_day()
                     strategy.reset_day()
                     risk.reset_day()
                     log_info("new_trading_day", date=str(today))
@@ -154,6 +170,7 @@ async def run() -> None:
     finally:
         log_info("shutting_down")
         await executor.flatten_all()
+        executor.end_of_day()
         feed_task.cancel()
         try:
             await feed_task

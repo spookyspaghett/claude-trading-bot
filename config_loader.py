@@ -15,8 +15,14 @@ class RiskConfig(BaseModel):
     stop_loss_pct: Decimal
     daily_loss_limit_usd: Decimal
     max_open_positions: int = Field(ge=1)
+    trailing_stop_pct: Decimal = Decimal("10")   # trailing stop % (10 = 10%)
+    loser_cut_pct: Decimal = Decimal("7")         # cut position if unrealized loss exceeds this %
 
-    @field_validator("max_position_usd", "stop_loss_pct", "daily_loss_limit_usd", mode="before")
+    @field_validator(
+        "max_position_usd", "stop_loss_pct", "daily_loss_limit_usd",
+        "trailing_stop_pct", "loser_cut_pct",
+        mode="before",
+    )
     @classmethod
     def coerce_decimal(cls, v: object) -> Decimal:
         return Decimal(str(v))
@@ -63,11 +69,17 @@ class StrategyConfig(BaseModel):
     ema: EmaConfig = EmaConfig()
 
 
+class AiConfig(BaseModel):
+    enable_research: bool = False       # Perplexity pre-market research
+    enable_claude_filter: bool = False  # Claude signal approval
+
+
 class Config(BaseModel):
     live: bool = False
     symbols: list[str] = Field(min_length=1)
     risk: RiskConfig
     strategy: StrategyConfig
+    ai: AiConfig = Field(default_factory=AiConfig)
     alpaca_api_key: str = Field(default="")
     alpaca_secret_key: str = Field(default="")
 

@@ -13,6 +13,7 @@ from alpaca.trading.requests import (
     LimitOrderRequest,
     MarketOrderRequest,
     StopOrderRequest,
+    TrailingStopOrderRequest,
 )
 
 if TYPE_CHECKING:
@@ -104,6 +105,22 @@ class BrokerClient:
         )
         return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]
 
+    async def submit_trailing_stop_order(
+        self,
+        symbol: str,
+        qty: Decimal,
+        side: OrderSide,
+        trail_percent: float,
+    ) -> Order:
+        request = TrailingStopOrderRequest(
+            symbol=symbol,
+            qty=float(qty),
+            side=side,
+            time_in_force=TimeInForce.DAY,
+            trail_percent=trail_percent,
+        )
+        return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]
+
     async def get_order(self, order_id: UUID) -> Order:
         return await asyncio.to_thread(  # type: ignore[return-value]
             self._client.get_order_by_id, str(order_id)
@@ -113,6 +130,9 @@ class BrokerClient:
 
     async def cancel_all_orders(self) -> None:
         await asyncio.to_thread(self._client.cancel_orders)
+
+    async def close_position(self, symbol: str) -> None:
+        await asyncio.to_thread(self._client.close_position, symbol)
 
     async def close_all_positions(self) -> None:
         await asyncio.to_thread(self._client.close_all_positions, cancel_orders=True)

@@ -12,9 +12,15 @@ symbols:
 
 risk:
   max_position_usd: 5000      # Maximum notional value per position (USD)
-  stop_loss_pct: 1.0          # Stop loss as % of entry price
+  stop_loss_pct: 1.0          # Stop loss % used by strategies to compute signal stop prices
   daily_loss_limit_usd: 500   # Flatten all & halt trading if daily P&L drops below this
   max_open_positions: 4       # Maximum number of concurrent open positions
+  trailing_stop_pct: 10.0     # Trailing stop % that follows the price to lock in gains
+  loser_cut_pct: 7.0          # Auto-exit any position whose unrealized loss exceeds this %
+
+ai:
+  enable_research: false      # Set true + add PERPLEXITY_API_KEY to .env for pre-market research
+  enable_claude_filter: false # Set true + add ANTHROPIC_API_KEY to .env for Claude signal approval
 
 strategy:
   name: orb                   # "orb" or "ema"
