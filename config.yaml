@@ -1,6 +1,5 @@
 # Paper trading only by default.
 # Set live: true ONLY when you are ready for real-money trading.
-# Even then, the program will print a confirmation prompt before starting.
 live: false
 
 # Symbols to watch and trade.
@@ -11,7 +10,7 @@ symbols:
   - NVDA
 
 risk:
-  max_position_usd: 5000      # Maximum notional value per position (USD)
+  max_position_usd: 50000     # Maximum notional value per position (USD)
   stop_loss_pct: 1.0          # Stop loss % used by strategies to compute signal stop prices
   daily_loss_limit_usd: 500   # Flatten all & halt trading if daily P&L drops below this
   max_open_positions: 4       # Maximum number of concurrent open positions

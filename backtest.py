@@ -288,6 +288,7 @@ def _run_with_daily_bars(
     open_trade: Trade | None = None
 
     for i in range(warmup, len(bars)):
+        risk.reset_daily_limit()   # each bar is one calendar day
         bar    = bars[i]
         window = bars[i - lookback: i]
 

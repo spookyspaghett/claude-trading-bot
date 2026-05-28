@@ -1,17 +1,31 @@
 from __future__ import annotations
 
+import json
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+REPORTS_DIR  = PROJECT_ROOT / "memory" / "backtest_reports"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 router = APIRouter()
+
+
+# ── Report persistence ────────────────────────────────────────────────────────
+
+def _save_report(payload: dict[str, Any]) -> Path:
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    ts  = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    sym = payload.get("symbol", "UNKNOWN")
+    path = REPORTS_DIR / f"{ts}_{sym}.json"
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return path
 
 
 # ── Shared response serialiser ────────────────────────────────────────────────
@@ -83,7 +97,10 @@ async def run_backtest_endpoint(req: BacktestRequest) -> dict[str, Any]:
             risk_config=cfg.risk,
         )
 
-        return _result_to_dict(result)
+        payload = _result_to_dict(result)
+        report_path = _save_report(payload)
+        payload["report_file"] = report_path.name
+        return payload
 
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -135,9 +152,28 @@ async def run_backtest_upload(
             trend_ma=max(0, trend_ma),
         )
 
-        return _result_to_dict(result)
+        payload = _result_to_dict(result)
+        report_path = _save_report(payload)
+        payload["report_file"] = report_path.name
+        return payload
 
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ── Report download ───────────────────────────────────────────────────────────
+
+@router.get("/backtest/report/{filename}")
+async def download_report(filename: str) -> FileResponse:
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    path = REPORTS_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Report not found.")
+    return FileResponse(
+        path=str(path),
+        media_type="application/json",
+        filename=filename,
+    )

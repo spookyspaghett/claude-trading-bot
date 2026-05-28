@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Play, Upload, ExternalLink, TrendingDown } from 'lucide-react'
+import { Play, Upload, ExternalLink, TrendingDown, Download } from 'lucide-react'
 import {
   ResponsiveContainer,
   AreaChart, Area,
@@ -40,6 +40,7 @@ interface BacktestResult {
   stats: BacktestStats
   equity_curve: { timestamp: number; equity: number }[]
   trades: BacktestTrade[]
+  report_file?: string
 }
 
 type DataSource = 'alpaca' | 'upload'
@@ -65,7 +66,8 @@ function fmtPct(n: number) {
 }
 
 function formatDate(ts: number) {
-  return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const d = new Date(ts * 1000)
+  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} '${String(d.getFullYear()).slice(2)}`
 }
 
 function fmtTime(iso: string) {
@@ -184,6 +186,17 @@ export default function BacktestPanel() {
     pnl: parseFloat(t.pnl),
     label: `#${i + 1} ${t.symbol} ${t.direction} @ ${fmtPrice(t.entry_price)}`,
   })) ?? []
+
+  function downloadReport() {
+    if (!result) return
+    const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = result.report_file ?? `backtest_${result.symbol}_${result.start_date}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <div className="space-y-4">
@@ -367,18 +380,28 @@ export default function BacktestPanel() {
 
       {result && (
         <>
-          {/* Strategy badge + return summary */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
-              isDaily
-                ? 'bg-purple-900/40 text-purple-300 border-purple-700/50'
-                : 'bg-blue-900/40 text-blue-300 border-blue-700/50'
-            }`}>
-              {result.strategy_used}
-            </span>
-            <span className={`text-sm font-bold tabular-nums ${pnlPositive ? 'text-green-400' : 'text-red-400'}`}>
-              {fmtPct(returnPct)} return on $100k
-            </span>
+          {/* Strategy badge + return summary + download */}
+          <div className="flex items-center gap-3 flex-wrap justify-between">
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className={`text-xs font-semibold px-2.5 py-1 rounded-full border ${
+                isDaily
+                  ? 'bg-purple-900/40 text-purple-300 border-purple-700/50'
+                  : 'bg-blue-900/40 text-blue-300 border-blue-700/50'
+              }`}>
+                {result.strategy_used}
+              </span>
+              <span className={`text-sm font-bold tabular-nums ${pnlPositive ? 'text-green-400' : 'text-red-400'}`}>
+                {fmtPct(returnPct)} return on $500k
+              </span>
+            </div>
+            <button
+              onClick={downloadReport}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-200 transition-colors"
+              title="Download report JSON — upload to Claude for analysis"
+            >
+              <Download size={12} />
+              Download for Claude
+            </button>
           </div>
 
           {/* ── Stats grid ────────────────────────────────────────────────── */}

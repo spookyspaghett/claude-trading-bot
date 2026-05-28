@@ -90,3 +90,12 @@ class RiskManager:
         self._daily_realized_pnl = Decimal("0")
         self._daily_limit_hit = False
         self._open_positions.clear()
+
+    def reset_daily_limit(self) -> None:
+        """Reset daily P&L counters without clearing open positions.
+
+        Use this in multi-day backtests where each bar represents one calendar
+        day — the daily loss limit should apply per day, not to the whole run.
+        """
+        self._daily_realized_pnl = Decimal("0")
+        self._daily_limit_hit = False
