@@ -141,25 +141,8 @@ class OrderExecutor:
             price=str(signal.entry_price),
             order_type=self._entry_order_type,
         )
-        self._pending_entries[order_id] = (order, signal.direction)
-
-        # Trailing stop on the protective side
-        stop_side = OrderSide.SELL if signal.direction == Direction.BUY else OrderSide.BUY
-        try:
-            stop_order = await self._broker.submit_trailing_stop_order(
-                symbol=signal.symbol,
-                qty=qty,
-                side=stop_side,
-                trail_percent=self._trailing_stop_pct,
-            )
-            self._pending_stops[str(stop_order.id)] = signal.symbol
-        except Exception as exc:
-            log_error(
-                "trailing_stop_failed",
-                symbol=signal.symbol,
-                trail_pct=self._trailing_stop_pct,
-                error=str(exc),
-            )
+        # Store qty so _poll_entries can place the trailing stop after fill
+        self._pending_entries[order_id] = (order, signal.direction, qty)
 
     async def flatten_all(self) -> None:
         """Cancel all open orders and market-close all positions."""
@@ -242,7 +225,7 @@ class OrderExecutor:
                     price=filled_price_str,
                 )
                 if status == OrderStatus.FILLED:
-                    _, direction = self._pending_entries[order_id]
+                    _, direction, entry_qty = self._pending_entries[order_id]
                     symbol = str(order.symbol)
                     fill_price = Decimal(filled_price_str)
                     fill_qty = Decimal(filled_qty_str)
@@ -257,6 +240,24 @@ class OrderExecutor:
                     qty_signed = fill_qty if order.side == OrderSide.BUY else -fill_qty
                     self._risk.record_fill(symbol=symbol, qty=qty_signed, realised_pnl=Decimal("0"))
                     del self._pending_entries[order_id]
+
+                    # Place trailing stop now that the position exists
+                    stop_side = OrderSide.SELL if direction == Direction.BUY else OrderSide.BUY
+                    try:
+                        stop_order = await self._broker.submit_trailing_stop_order(
+                            symbol=symbol,
+                            qty=fill_qty,
+                            side=stop_side,
+                            trail_percent=self._trailing_stop_pct,
+                        )
+                        self._pending_stops[str(stop_order.id)] = symbol
+                    except Exception as exc:
+                        log_error(
+                            "trailing_stop_failed",
+                            symbol=symbol,
+                            trail_pct=self._trailing_stop_pct,
+                            error=str(exc),
+                        )
 
             elif status in (OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED):
                 log_rejection(
