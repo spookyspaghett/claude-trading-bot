@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Play, Upload, ExternalLink, TrendingDown, Download } from 'lucide-react'
+import { Play, Upload, ExternalLink, TrendingDown, Download, ChevronDown, ChevronUp } from 'lucide-react'
 import {
   ResponsiveContainer,
   AreaChart, Area,
@@ -109,9 +109,17 @@ export default function BacktestPanel() {
 
   const [uploadSymbol, setUploadSymbol] = useState('SPY')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
-  const [lookbackDays, setLookbackDays] = useState(20)
+  const [lookbackDays, setLookbackDays] = useState(40)
   const [longOnly, setLongOnly] = useState(false)
   const [trendMa, setTrendMa] = useState(0)
+  const [fastMa, setFastMa] = useState(50)
+  const [useAtrStop, setUseAtrStop] = useState(true)
+  const [atrPeriod, setAtrPeriod] = useState(14)
+  const [atrMultiplier, setAtrMultiplier] = useState(1.5)
+  const [volumeFilterDays, setVolumeFilterDays] = useState(20)
+  const [trailingActivationPct, setTrailingActivationPct] = useState(2.0)
+  const [trailingPct, setTrailingPct] = useState(8.0)
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [loading, setLoading] = useState(false)
@@ -148,6 +156,13 @@ export default function BacktestPanel() {
       form.append('lookback_days', String(lookbackDays))
       form.append('long_only', String(longOnly))
       form.append('trend_ma', String(trendMa))
+      form.append('fast_ma', String(fastMa))
+      form.append('use_atr_stop', String(useAtrStop))
+      form.append('atr_period', String(atrPeriod))
+      form.append('atr_multiplier', String(atrMultiplier))
+      form.append('volume_filter_days', String(volumeFilterDays))
+      form.append('trailing_activation_pct', String(trailingActivationPct))
+      form.append('trailing_pct', String(trailingPct))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -327,6 +342,107 @@ export default function BacktestPanel() {
                 <Play size={14} />
                 {loading ? 'Running…' : 'Run Backtest'}
               </button>
+            </div>
+
+            {/* ── Advanced settings ────────────────────────────────────────── */}
+            <div className="border-t border-slate-700/60 pt-3">
+              <button
+                onClick={() => setShowAdvanced(v => !v)}
+                className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors"
+              >
+                {showAdvanced ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                Advanced settings
+              </button>
+              {showAdvanced && (
+                <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {/* Fast MA */}
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Fast MA <span className="text-slate-600">(0 = off)</span>
+                    </label>
+                    <input type="number" min={0} max={500} step={1}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:border-blue-500"
+                      value={fastMa}
+                      onChange={e => setFastMa(Math.max(0, parseInt(e.target.value) || 0))}
+                    />
+                    <p className="text-[10px] text-slate-600 mt-0.5">e.g. 50-day</p>
+                  </div>
+
+                  {/* Volume filter */}
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Volume filter <span className="text-slate-600">(0 = off)</span>
+                    </label>
+                    <input type="number" min={0} max={200} step={1}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:border-blue-500"
+                      value={volumeFilterDays}
+                      onChange={e => setVolumeFilterDays(Math.max(0, parseInt(e.target.value) || 0))}
+                    />
+                    <p className="text-[10px] text-slate-600 mt-0.5">avg vol lookback days</p>
+                  </div>
+
+                  {/* ATR stop toggle */}
+                  <div className="flex flex-col justify-between">
+                    <label className="text-xs text-slate-500 block mb-1">ATR stop</label>
+                    <label className="flex items-center gap-2 cursor-pointer select-none mt-1">
+                      <input type="checkbox" checked={useAtrStop} onChange={e => setUseAtrStop(e.target.checked)}
+                        className="w-4 h-4 accent-blue-500"
+                      />
+                      <span className="text-sm text-slate-300 font-medium">Use ATR stop</span>
+                    </label>
+                    <p className="text-[10px] text-slate-600 mt-0.5">instead of fixed %</p>
+                  </div>
+
+                  {/* ATR period */}
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">ATR period</label>
+                    <input type="number" min={2} max={50} step={1}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:border-blue-500"
+                      value={atrPeriod}
+                      disabled={!useAtrStop}
+                      onChange={e => setAtrPeriod(Math.max(2, parseInt(e.target.value) || 14))}
+                    />
+                    <p className="text-[10px] text-slate-600 mt-0.5">days for ATR calc</p>
+                  </div>
+
+                  {/* ATR multiplier */}
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">ATR multiplier</label>
+                    <input type="number" min={0.1} max={10} step={0.1}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:border-blue-500"
+                      value={atrMultiplier}
+                      disabled={!useAtrStop}
+                      onChange={e => setAtrMultiplier(Math.max(0.1, parseFloat(e.target.value) || 1.5))}
+                    />
+                    <p className="text-[10px] text-slate-600 mt-0.5">stop = ATR × this</p>
+                  </div>
+
+                  {/* Trailing activation */}
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Trail activate % <span className="text-slate-600">(0 = off)</span>
+                    </label>
+                    <input type="number" min={0} max={50} step={0.5}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:border-blue-500"
+                      value={trailingActivationPct}
+                      onChange={e => setTrailingActivationPct(Math.max(0, parseFloat(e.target.value) || 0))}
+                    />
+                    <p className="text-[10px] text-slate-600 mt-0.5">profit % before trailing kicks in</p>
+                  </div>
+
+                  {/* Trailing stop % */}
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Trailing stop %</label>
+                    <input type="number" min={0} max={50} step={0.5}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-full focus:outline-none focus:border-blue-500"
+                      value={trailingPct}
+                      disabled={trailingActivationPct <= 0}
+                      onChange={e => setTrailingPct(Math.max(0, parseFloat(e.target.value) || 0))}
+                    />
+                    <p className="text-[10px] text-slate-600 mt-0.5">% below peak to trail</p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -579,6 +695,7 @@ export default function BacktestPanel() {
                         <td className="px-4 py-2 text-center">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                             t.exit_reason === 'stop' ? 'bg-red-900/40 text-red-400' :
+                            t.exit_reason === 'trail' ? 'bg-orange-900/40 text-orange-400' :
                             t.exit_reason === 'eod' || t.exit_reason === 'eod_forced' ? 'bg-slate-800 text-slate-400' :
                             t.exit_reason === 'channel' ? 'bg-purple-900/40 text-purple-400' :
                             'bg-slate-800 text-slate-500'

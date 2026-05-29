@@ -114,9 +114,16 @@ async def run_backtest_endpoint(req: BacktestRequest) -> dict[str, Any]:
 async def run_backtest_upload(
     file: UploadFile = File(...),
     symbol: str = Form(...),
-    lookback_days: int = Form(20),
+    lookback_days: int = Form(40),
     long_only: bool = Form(False),
     trend_ma: int = Form(0),
+    fast_ma: int = Form(50),
+    atr_period: int = Form(14),
+    atr_multiplier: float = Form(1.5),
+    use_atr_stop: bool = Form(True),
+    volume_filter_days: int = Form(20),
+    trailing_activation_pct: float = Form(2.0),
+    trailing_pct: float = Form(8.0),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -150,6 +157,13 @@ async def run_backtest_upload(
             lookback=max(2, lookback_days),
             long_only=long_only,
             trend_ma=max(0, trend_ma),
+            fast_ma=max(0, fast_ma),
+            atr_period=max(2, atr_period),
+            atr_multiplier=max(0.1, atr_multiplier),
+            use_atr_stop=use_atr_stop,
+            volume_filter_days=max(0, volume_filter_days),
+            trailing_activation_pct=max(0.0, trailing_activation_pct),
+            trailing_pct=max(0.0, trailing_pct),
         )
 
         payload = _result_to_dict(result)
