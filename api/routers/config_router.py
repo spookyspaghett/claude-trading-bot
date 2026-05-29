@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import EmaConfig, OrbConfig, StrategyConfig  # noqa: E402
+from config_loader import DonchianConfig, EmaConfig, OrbConfig, StrategyConfig  # noqa: E402
 
 router = APIRouter()
 
@@ -50,6 +50,7 @@ async def put_config(body: ConfigPublic) -> dict[str, str]:
     try:
         orb = body.strategy.orb
         ema = body.strategy.ema
+        don = body.strategy.donchian
         data: dict[str, Any] = {
             "live": body.live,
             "symbols": body.symbols,
@@ -58,7 +59,10 @@ async def put_config(body: ConfigPublic) -> dict[str, str]:
                 "stop_loss_pct":       float(body.risk.stop_loss_pct),
                 "daily_loss_limit_usd": float(body.risk.daily_loss_limit_usd),
                 "max_open_positions":  body.risk.max_open_positions,
+                "trailing_stop_pct":   10.0,
+                "loser_cut_pct":       7.0,
             },
+            "ai": {"enable_research": False, "enable_claude_filter": False},
             "strategy": {
                 "name": body.strategy.name,
                 "orb": {
@@ -71,6 +75,13 @@ async def put_config(body: ConfigPublic) -> dict[str, str]:
                     "slow_period":      ema.slow_period,
                     "entry_order_type": ema.entry_order_type,
                     "eod_exit_time":    ema.eod_exit_time,
+                },
+                "donchian": {
+                    "lookback_days":            don.lookback_days,
+                    "trend_ma":                 don.trend_ma,
+                    "trailing_activation_pct":  don.trailing_activation_pct,
+                    "trailing_pct":             don.trailing_pct,
+                    "long_only":                don.long_only,
                 },
             },
         }

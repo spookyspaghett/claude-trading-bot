@@ -65,10 +65,66 @@ def _build_strategy(config: object) -> tuple[Strategy, str]:
     return strat, order_type
 
 
+async def _run_donchian(config: object) -> None:
+    """Separate run loop for the daily Donchian strategy."""
+    from config_loader import Config
+    from donchian_runner import DonchianRunner
+    from donchian_strategy import DonchianLiveStrategy
+    assert isinstance(config, Config)
+
+    dc = config.strategy.donchian
+    log_info("strategy_selected", strategy="donchian",
+             lookback=dc.lookback_days, trend_ma=dc.trend_ma,
+             long_only=dc.long_only)
+
+    try:
+        broker = BrokerClient(config)
+    except LiveTradingNotConfirmedError as exc:
+        print(str(exc), file=sys.stderr)
+        return
+
+    risk = RiskManager(
+        max_position_usd=config.risk.max_position_usd,
+        stop_loss_pct=config.risk.stop_loss_pct,
+        daily_loss_limit_usd=config.risk.daily_loss_limit_usd,
+        max_open_positions=config.risk.max_open_positions,
+    )
+    strategy = DonchianLiveStrategy(
+        lookback_days=dc.lookback_days,
+        trend_ma=dc.trend_ma,
+        trailing_activation_pct=dc.trailing_activation_pct,
+        trailing_pct=dc.trailing_pct,
+        long_only=dc.long_only,
+    )
+    runner = DonchianRunner(
+        symbols=config.symbols,
+        broker=broker,
+        risk=risk,
+        strategy=strategy,
+        api_key=config.alpaca_api_key,
+        secret_key=config.alpaca_secret_key,
+    )
+
+    shutdown_event = asyncio.Event()
+
+    def _handle_sigint(sig: int, frame: object) -> None:
+        log_info("shutdown_signal_received", sig=sig)
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+    await runner.run(shutdown_event)
+    log_info("donchian_shutdown_complete")
+
+
 async def run() -> None:
     config = load_config(Path("config.yaml"))
     setup_logging()
     log_info("startup", symbols=config.symbols, live=config.live, mode="paper" if not config.live else "LIVE")
+
+    # Donchian is a separate daily-bar loop — hand off and return
+    if config.strategy.name == "donchian":
+        await _run_donchian(config)
+        return
 
     try:
         broker = BrokerClient(config)

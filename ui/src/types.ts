@@ -70,6 +70,14 @@ export interface ConfigEma {
   eod_exit_time: string
 }
 
+export interface ConfigDonchian {
+  lookback_days: number
+  trend_ma: number
+  trailing_activation_pct: number
+  trailing_pct: number
+  long_only: boolean
+}
+
 export interface Config {
   live: boolean
   symbols: string[]
@@ -78,5 +86,6 @@ export interface Config {
     name: string
     orb: ConfigOrb
     ema: ConfigEma
+    donchian: ConfigDonchian
   }
 }

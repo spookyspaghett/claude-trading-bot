@@ -63,10 +63,19 @@ class EmaConfig(BaseModel):
         return v
 
 
+class DonchianConfig(BaseModel):
+    lookback_days: int = Field(ge=2, le=200, default=40)
+    trend_ma: int = Field(ge=0, le=500, default=200)
+    trailing_activation_pct: float = Field(ge=0.0, le=50.0, default=1.0)
+    trailing_pct: float = Field(ge=0.0, le=50.0, default=8.0)
+    long_only: bool = True
+
+
 class StrategyConfig(BaseModel):
-    name: Literal["orb", "ema"] = "orb"
+    name: Literal["orb", "ema", "donchian"] = "orb"
     orb: OrbConfig = OrbConfig(opening_range_minutes=15)
     ema: EmaConfig = EmaConfig()
+    donchian: DonchianConfig = DonchianConfig()
 
 
 class AiConfig(BaseModel):

@@ -22,7 +22,7 @@ ai:
   enable_claude_filter: false # Set true + add ANTHROPIC_API_KEY to .env for Claude signal approval
 
 strategy:
-  name: orb                   # "orb" or "ema"
+  name: orb                   # "orb", "ema", or "donchian"
 
   orb:
     opening_range_minutes: 15    # Observe 09:30–09:45 ET to set the range
@@ -34,3 +34,10 @@ strategy:
     slow_period: 21              # Slow EMA period (minutes)
     entry_order_type: market     # "limit" or "market"  (market recommended for EMA)
     eod_exit_time: "15:50"       # Flatten all positions at this time ET
+
+  donchian:
+    lookback_days: 40            # N-day channel: buy breakout above N-day high
+    trend_ma: 200                # Only trade in direction of N-day MA (0 = off)
+    trailing_activation_pct: 1.0 # Activate trailing stop after X% profit
+    trailing_pct: 8.0            # Trail X% below the peak price
+    long_only: true              # Only take long (buy) positions
