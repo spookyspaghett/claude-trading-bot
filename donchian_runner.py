@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
+from alpaca.data.enums import DataFeed
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.enums import OrderSide
 
@@ -100,6 +101,7 @@ class DonchianRunner:
             timeframe=TimeFrame(1, TimeFrameUnit.Day),
             start=start,
             end=now,
+            feed=DataFeed.IEX,
         )
         raw  = await asyncio.to_thread(self._data_client.get_stock_bars, req)
         bars = list(raw[symbol]) if symbol in raw else []
