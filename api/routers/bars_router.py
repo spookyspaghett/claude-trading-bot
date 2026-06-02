@@ -25,6 +25,17 @@ _TF: dict[str, tuple[int, str, int]] = {
     "1Day":  (1, "Day", 60 * 24),
 }
 
+# Accept short forms (what the UI buttons show and what's natural to type).
+_TF_ALIASES: dict[str, str] = {
+    "1m": "1Min", "5m": "5Min", "15m": "15Min", "1h": "1Hour", "1d": "1Day",
+}
+
+
+def _resolve_tf(timeframe: str) -> str:
+    if timeframe in _TF:
+        return timeframe
+    return _TF_ALIASES.get(timeframe.lower(), timeframe)
+
 
 def _indicator_meta(cfg: Any) -> dict[str, Any]:
     """Expose the moving averages / pivot params the active strategy uses so the
@@ -126,6 +137,7 @@ async def get_bars(
     timeframe: str = "15Min",
     limit: int = 200,
 ) -> dict[str, Any]:
+    timeframe = _resolve_tf(timeframe)
     if timeframe not in _TF:
         raise HTTPException(status_code=422,
                             detail=f"timeframe must be one of {list(_TF)}")
