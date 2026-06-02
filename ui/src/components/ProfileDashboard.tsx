@@ -9,19 +9,21 @@ import PnLChart from './PnLChart'
 import EquityChart from './EquityChart'
 import SignalFeed from './SignalFeed'
 import ConfigEditor from './ConfigEditor'
+import PriceChart from './PriceChart'
 import type { Account, AssetClass, BotStatus, EquityPoint, PnLPoint, Position } from '../types'
 
 interface Props {
   slug: string
   name: string
   assetClass: AssetClass
+  symbols: string[]
   onStatusChange: () => void
 }
 
 const DEFAULT_STATUS: BotStatus = { running: false, pid: null }
 const DEFAULT_ACCOUNT: Account = { equity: '0', portfolio_value: '0', buying_power: '0', cash: '0', daily_pnl: '0' }
 
-export default function ProfileDashboard({ slug, name, assetClass, onStatusChange }: Props) {
+export default function ProfileDashboard({ slug, name, assetClass, symbols, onStatusChange }: Props) {
   const q = `?profile=${encodeURIComponent(slug)}`
 
   const { events, connected: wsConnected } = useWebSocket(`/api/ws/logs${q}`)
@@ -63,6 +65,7 @@ export default function ProfileDashboard({ slug, name, assetClass, onStatusChang
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {symbols.length > 0 && <PriceChart slug={slug} symbols={symbols} />}
         <PositionsTable positions={positions} />
         <PnLChart data={pnlData} />
         <SignalFeed events={events} wsConnected={wsConnected} />

@@ -118,6 +118,7 @@ export default function App() {
             slug={selectedProfile.slug}
             name={selectedProfile.name}
             assetClass={selectedProfile.asset_class}
+            symbols={selectedProfile.symbols}
             onStatusChange={refreshStatus}
           />
         )}
