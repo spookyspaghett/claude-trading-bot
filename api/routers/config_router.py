@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import StrategyConfig  # noqa: E402
+from config_loader import Config, StrategyConfig  # noqa: E402
 from profiles import (  # noqa: E402
     get_active_slug,
     load_active_config,
@@ -41,10 +41,14 @@ class ConfigPublic(BaseModel):
 
 
 @router.get("/config")
-async def get_config() -> ConfigPublic:
-    """Return the editable settings of the active profile."""
+async def get_config(profile: str | None = None) -> ConfigPublic:
+    """Return the editable settings of a profile (active when none given)."""
     try:
-        cfg = load_active_config()
+        if profile:
+            data = load_profile(profile)
+            cfg = Config(**{k: v for k, v in data.items() if k != "name"})
+        else:
+            cfg = load_active_config()
         return ConfigPublic(
             live=cfg.live,
             asset_class=cfg.asset_class,
@@ -62,12 +66,12 @@ async def get_config() -> ConfigPublic:
 
 
 @router.put("/config")
-async def put_config(body: ConfigPublic) -> dict[str, str]:
-    """Merge edits into the active profile, preserving keys, name and AI settings."""
+async def put_config(body: ConfigPublic, profile: str | None = None) -> dict[str, str]:
+    """Merge edits into a profile (active when none given); keep keys, name and AI."""
     try:
-        slug = get_active_slug()
+        slug = profile or get_active_slug()
         if slug is None:
-            raise ValueError("No active profile to save into.")
+            raise ValueError("No profile to save into.")
 
         existing: dict[str, Any] = load_profile(slug)
         prev_risk = existing.get("risk", {}) or {}
@@ -89,7 +93,7 @@ async def put_config(body: ConfigPublic) -> dict[str, str]:
         save_profile(slug, existing)
 
         from api.deps import reset_client
-        reset_client()
+        reset_client(slug)
         return {"status": "saved"}
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

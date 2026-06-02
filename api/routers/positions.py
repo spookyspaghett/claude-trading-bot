@@ -10,9 +10,9 @@ router = APIRouter()
 
 
 @router.get("/positions")
-async def get_positions() -> list[dict[str, str]]:
+async def get_positions(profile: str | None = None) -> list[dict[str, str]]:
     try:
-        client = get_trading_client()
+        client = get_trading_client(profile)
         positions = await asyncio.to_thread(client.get_all_positions)
         return [
             {

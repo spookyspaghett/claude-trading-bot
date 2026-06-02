@@ -140,17 +140,16 @@ async def update_profile(slug: str, body: ProfileBody) -> dict[str, Any]:
 @router.delete("/profiles/{slug}")
 async def remove_profile(slug: str) -> dict[str, str]:
     from api import bot_manager
-    if bot_manager.is_running() and slug == get_active_slug():
-        raise HTTPException(status_code=409, detail="Stop the bot before deleting the active profile.")
+    if bot_manager.is_running(slug):
+        raise HTTPException(status_code=409, detail="Stop this profile's bot before deleting it.")
     delete_profile(slug)
     return {"status": "deleted"}
 
 
 @router.post("/profiles/{slug}/activate")
 async def activate_profile(slug: str) -> dict[str, str]:
-    from api import bot_manager
-    if bot_manager.is_running():
-        raise HTTPException(status_code=409, detail="Stop the bot before switching profiles.")
+    """Set the default profile used by slug-less endpoints (Backtest, etc.).
+    Bots run independently per profile, so this no longer needs the bot stopped."""
     try:
         set_active_slug(slug)
     except Exception as exc:

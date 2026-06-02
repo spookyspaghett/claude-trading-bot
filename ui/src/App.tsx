@@ -1,123 +1,135 @@
-import { useState } from 'react'
-import { TrendingUp, LayoutDashboard, FlaskConical, Wallet } from 'lucide-react'
-import { useWebSocket } from './hooks/useWebSocket'
-import { usePolling } from './hooks/useApi'
-import StatusBar from './components/StatusBar'
-import BotControls from './components/BotControls'
-import KillSwitch from './components/KillSwitch'
-import PositionsTable from './components/PositionsTable'
-import PnLChart from './components/PnLChart'
-import EquityChart from './components/EquityChart'
-import SignalFeed from './components/SignalFeed'
-import ConfigEditor from './components/ConfigEditor'
+import { useEffect, useState } from 'react'
+import { TrendingUp, FlaskConical, Wallet, Coins, LineChart, Zap } from 'lucide-react'
+import { usePolling, apiPost } from './hooks/useApi'
 import BacktestPanel from './components/BacktestPanel'
 import ProfilesPanel from './components/ProfilesPanel'
-import type { Account, BotStatus, EquityPoint, PnLPoint, Position } from './types'
+import ProfileDashboard from './components/ProfileDashboard'
+import type { BotStatusMap, ProfileSummary } from './types'
 
-type Tab = 'dashboard' | 'backtest' | 'profiles'
-
-const DEFAULT_STATUS: BotStatus = { running: false, pid: null }
-const DEFAULT_ACCOUNT: Account = { equity: '0', portfolio_value: '0', buying_power: '0', cash: '0', daily_pnl: '0' }
+// Selected view: a profile slug, or one of the global tabs.
+type View = { kind: 'profile'; slug: string } | { kind: 'backtest' } | { kind: 'manage' }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('dashboard')
+  const [view, setView] = useState<View>({ kind: 'manage' })
 
-  const { events, connected: wsConnected } = useWebSocket('/api/ws/logs')
+  const { data: profiles, refresh: refreshProfiles } = usePolling<ProfileSummary[]>(
+    '/api/profiles', 30_000, [],
+  )
+  const { data: status, refresh: refreshStatus } = usePolling<BotStatusMap>(
+    '/api/bot/status', 5_000, { bots: {} },
+  )
 
-  const { data: botStatus, refresh: refreshBot } = usePolling<BotStatus>(
-    '/api/bot/status', 5_000, DEFAULT_STATUS,
-  )
-  const { data: positions } = usePolling<Position[]>(
-    '/api/positions', 10_000, [],
-  )
-  const { data: account } = usePolling<Account>(
-    '/api/account', 30_000, DEFAULT_ACCOUNT,
-  )
-  const { data: equityHistory } = usePolling<EquityPoint[]>(
-    '/api/equity-history', 300_000, [],
-  )
-  const { data: pnlData } = usePolling<PnLPoint[]>(
-    '/api/pnl-intraday', 60_000, [],
-  )
+  const [killingAll, setKillingAll] = useState(false)
+
+  // Once profiles load, default to the active profile (or the first one).
+  useEffect(() => {
+    if (view.kind === 'manage' && profiles.length > 0) {
+      const active = profiles.find(p => p.active) ?? profiles[0]
+      setView({ kind: 'profile', slug: active.slug })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profiles])
+
+  const runningCount = Object.values(status.bots).filter(b => b.running).length
+
+  async function killAll() {
+    setKillingAll(true)
+    try {
+      await apiPost('/api/kill-all')
+      refreshStatus()
+    } catch {
+      // ignore — kill files may still have been created
+    } finally {
+      setKillingAll(false)
+    }
+  }
+
+  const selectedSlug = view.kind === 'profile' ? view.slug : null
+  const selectedProfile = profiles.find(p => p.slug === selectedSlug) ?? null
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header className="bg-slate-900 border-b border-slate-700 px-4 py-2">
-        {/* ── Top row: brand + tabs + controls ───────────────────────────── */}
         <div className="max-w-screen-2xl mx-auto flex items-center gap-3 flex-wrap">
-          {/* Brand */}
           <div className="flex items-center gap-2">
             <TrendingUp size={18} className="text-blue-400 shrink-0" />
             <span className="font-bold text-slate-100 text-sm tracking-tight whitespace-nowrap">Claude Trading</span>
           </div>
 
-          {/* Tab switcher */}
-          <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+          {/* Profile tabs + global tabs */}
+          <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 flex-wrap">
+            {profiles.map(p => {
+              const running = status.bots[p.slug]?.running ?? false
+              const isSel = selectedSlug === p.slug
+              return (
+                <button key={p.slug}
+                  onClick={() => setView({ kind: 'profile', slug: p.slug })}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                    isSel ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title={running ? 'Bot running' : 'Bot stopped'}
+                >
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${running ? 'bg-green-400' : 'bg-slate-600'}`} />
+                  {p.asset_class === 'crypto' ? <Coins size={12} /> : <LineChart size={12} />}
+                  {p.name}
+                </button>
+              )
+            })}
+
+            <span className="w-px h-4 bg-slate-700 mx-0.5" />
+
             <button
-              onClick={() => setTab('dashboard')}
+              onClick={() => setView({ kind: 'backtest' })}
               className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                tab === 'dashboard' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                view.kind === 'backtest' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <LayoutDashboard size={12} />
-              Dashboard
+              <FlaskConical size={12} /> Backtest
             </button>
             <button
-              onClick={() => setTab('backtest')}
+              onClick={() => setView({ kind: 'manage' })}
               className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                tab === 'backtest' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                view.kind === 'manage' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              <FlaskConical size={12} />
-              Backtest
-            </button>
-            <button
-              onClick={() => setTab('profiles')}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                tab === 'profiles' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
-              }`}
-            >
-              <Wallet size={12} />
-              Profiles
+              <Wallet size={12} /> Profiles
             </button>
           </div>
 
-          {/* Status badges */}
-          <StatusBar botStatus={botStatus} wsConnected={wsConnected} account={account} />
-
-          {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Controls — grouped tightly */}
-          <div className="flex items-center gap-2 shrink-0">
-            <BotControls botStatus={botStatus} onStatusChange={refreshBot} />
-            <KillSwitch onTriggered={refreshBot} />
-          </div>
+          {/* Master kill — only meaningful while something runs */}
+          <button
+            onClick={() => void killAll()}
+            disabled={killingAll || runningCount === 0}
+            title={runningCount === 0 ? 'No bots running' : `Flatten & stop all ${runningCount} running bots`}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-700 hover:bg-red-600 disabled:opacity-40 border border-red-500 transition-colors"
+          >
+            <Zap size={13} />
+            Kill all{runningCount > 0 ? ` (${runningCount})` : ''}
+          </button>
         </div>
       </header>
 
-      {/* ── Main content ───────────────────────────────────────────────────── */}
       <main className="flex-1 p-4 max-w-screen-2xl mx-auto w-full">
-        {tab === 'dashboard' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Row 1 */}
-            <PositionsTable positions={positions} />
-            <PnLChart data={pnlData} />
-
-            {/* Row 2 */}
-            <SignalFeed events={events} wsConnected={wsConnected} />
-            <EquityChart data={equityHistory} />
-
-            {/* Row 3 — full width */}
-            <div className="lg:col-span-2">
-              <ConfigEditor onRestart={refreshBot} />
-            </div>
-          </div>
+        {view.kind === 'profile' && selectedProfile && (
+          <ProfileDashboard
+            key={selectedProfile.slug}
+            slug={selectedProfile.slug}
+            name={selectedProfile.name}
+            assetClass={selectedProfile.asset_class}
+            onStatusChange={refreshStatus}
+          />
         )}
-        {tab === 'backtest' && <BacktestPanel />}
-        {tab === 'profiles' && (
-          <ProfilesPanel botRunning={botStatus.running} onActivated={refreshBot} />
+        {view.kind === 'profile' && !selectedProfile && (
+          <p className="text-slate-500 text-sm">Profile not found — pick another tab.</p>
+        )}
+        {view.kind === 'backtest' && <BacktestPanel />}
+        {view.kind === 'manage' && (
+          <ProfilesPanel
+            runningSlugs={Object.entries(status.bots).filter(([, b]) => b.running).map(([s]) => s)}
+            onActivated={() => { refreshProfiles(); refreshStatus() }}
+          />
         )}
       </main>
     </div>

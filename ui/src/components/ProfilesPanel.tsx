@@ -4,7 +4,7 @@ import { apiPost, apiPut } from '../hooks/useApi'
 import type { AssetClass, ProfileSummary } from '../types'
 
 interface Props {
-  botRunning: boolean
+  runningSlugs: string[]
   onActivated: () => void
 }
 
@@ -69,7 +69,7 @@ function AssetBadge({ asset }: { asset: AssetClass }) {
   )
 }
 
-export default function ProfilesPanel({ botRunning, onActivated }: Props) {
+export default function ProfilesPanel({ runningSlugs, onActivated }: Props) {
   const [profiles, setProfiles] = useState<ProfileSummary[]>([])
   const [form, setForm] = useState<FormState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -189,7 +189,7 @@ export default function ProfilesPanel({ botRunning, onActivated }: Props) {
         <div>
           <h2 className="text-sm font-semibold text-slate-200">Trading Profiles</h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Each profile has its own API keys, asset class, symbols, strategy and risk. Stop the bot to switch.
+            Each profile has its own API keys, asset class, symbols, strategy and risk. Run several at once from their tabs.
           </p>
         </div>
         {!form && (
@@ -221,7 +221,12 @@ export default function ProfilesPanel({ botRunning, onActivated }: Props) {
                     <span className="font-semibold text-slate-100 truncate">{p.name}</span>
                     {p.active && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-bold text-green-400">
-                        <Check size={11} /> ACTIVE
+                        <Check size={11} /> DEFAULT
+                      </span>
+                    )}
+                    {runningSlugs.includes(p.slug) && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-300">
+                        ● RUNNING
                       </span>
                     )}
                   </div>
@@ -242,10 +247,10 @@ export default function ProfilesPanel({ botRunning, onActivated }: Props) {
               <div className="flex items-center gap-1.5 mt-auto pt-1">
                 <button
                   onClick={() => void activate(p.slug)}
-                  disabled={busy || p.active || botRunning}
-                  title={botRunning ? 'Stop the bot to switch profiles' : 'Make this the active profile'}
+                  disabled={busy || p.active}
+                  title="Make this the default profile for Backtest and slug-less views"
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-semibold bg-green-700 hover:bg-green-600 disabled:opacity-40 transition-colors">
-                  <Power size={12} /> {p.active ? 'Active' : 'Activate'}
+                  <Power size={12} /> {p.active ? 'Default' : 'Make default'}
                 </button>
                 <button onClick={() => void startEdit(p.slug)} disabled={busy}
                   className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium bg-slate-700 hover:bg-slate-600 disabled:opacity-40 transition-colors">
@@ -253,8 +258,8 @@ export default function ProfilesPanel({ botRunning, onActivated }: Props) {
                 </button>
                 <button
                   onClick={() => void remove(p.slug)}
-                  disabled={busy || (p.active && botRunning)}
-                  title="Delete profile"
+                  disabled={busy || runningSlugs.includes(p.slug)}
+                  title={runningSlugs.includes(p.slug) ? 'Stop this profile’s bot before deleting' : 'Delete profile'}
                   className="flex items-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium bg-slate-800 hover:bg-red-900/60 text-slate-400 hover:text-red-300 disabled:opacity-40 transition-colors ml-auto">
                   <Trash2 size={12} />
                 </button>

@@ -22,6 +22,10 @@ export interface BotStatus {
   pid: number | null
 }
 
+export interface BotStatusMap {
+  bots: Record<string, BotStatus>
+}
+
 export interface LogEvent {
   event: string
   timestamp: string

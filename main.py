@@ -4,13 +4,14 @@ import asyncio
 import signal
 import sys
 from datetime import date, datetime, time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from alpaca.data.models import Bar
 
 import alerts
 from broker import BrokerClient, LiveTradingNotConfirmedError
-from data import AggregatedBar, DataFeed
+from data import DataFeed
 from executor import OrderExecutor
 from logger import log_error, log_info, setup_logging
 from research import PremarketResearch
@@ -78,7 +79,7 @@ def _build_strategy(config: object) -> tuple[Strategy, str]:
     return strat, order_type
 
 
-async def _run_donchian(config: object) -> None:
+async def _run_donchian(config: object, kill_path: Path = Path("KILL")) -> None:
     """Separate run loop for the daily Donchian strategy."""
     from config_loader import Config
     from donchian_runner import DonchianRunner
@@ -101,6 +102,7 @@ async def _run_donchian(config: object) -> None:
         stop_loss_pct=config.risk.stop_loss_pct,
         daily_loss_limit_usd=config.risk.daily_loss_limit_usd,
         max_open_positions=config.risk.max_open_positions,
+        kill_switch_path=kill_path,
     )
     strategy = DonchianLiveStrategy(
         lookback_days=dc.lookback_days,
@@ -130,10 +132,21 @@ async def _run_donchian(config: object) -> None:
     log_info("donchian_shutdown_complete")
 
 
-async def run() -> None:
-    from profiles import load_active_config
-    config = load_active_config()
-    setup_logging()
+async def run(slug: str | None = None) -> None:
+    from config_loader import Config
+    from profiles import load_active_config, load_profile
+
+    if slug:
+        data = load_profile(slug)
+        config = Config(**{k: v for k, v in data.items() if k != "name"})
+        log_dir = Path("logs") / slug
+        kill_path = log_dir / "KILL"
+    else:
+        config = load_active_config()
+        log_dir = Path("logs")
+        kill_path = Path("KILL")
+
+    setup_logging(log_dir)
     is_crypto = config.asset_class == "crypto"
     log_info("startup", symbols=config.symbols, live=config.live,
              asset_class=config.asset_class,
@@ -141,7 +154,7 @@ async def run() -> None:
 
     # Donchian is a separate daily-bar loop — hand off and return
     if config.strategy.name == "donchian":
-        await _run_donchian(config)
+        await _run_donchian(config, kill_path)
         return
 
     try:
@@ -157,6 +170,7 @@ async def run() -> None:
         stop_loss_pct=config.risk.stop_loss_pct,
         daily_loss_limit_usd=config.risk.daily_loss_limit_usd,
         max_open_positions=config.risk.max_open_positions,
+        kill_switch_path=kill_path,
     )
     strategy, entry_order_type = _build_strategy(config)
     executor = OrderExecutor(
@@ -264,5 +278,13 @@ async def run() -> None:
         log_info("shutdown_complete")
 
 
+def _parse_profile_arg(argv: list[str]) -> str | None:
+    if "--profile" in argv:
+        i = argv.index("--profile")
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(run(_parse_profile_arg(sys.argv[1:])))

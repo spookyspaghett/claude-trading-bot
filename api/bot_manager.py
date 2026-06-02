@@ -6,89 +6,123 @@ from io import TextIOWrapper
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
-_LOG_PATH = PROJECT_ROOT / "logs" / "bot_stderr.log"
 
-_process: subprocess.Popen[bytes] | None = None
-_log_fh: TextIOWrapper | None = None
+# One bot subprocess per profile slug, each with its own stdout/stderr log file
+# and its own KILL file under logs/<slug>/.
+_processes: dict[str, subprocess.Popen[bytes]] = {}
+_log_fhs: dict[str, TextIOWrapper] = {}
 
 
-def start() -> dict[str, object]:
-    global _process, _log_fh
-    if is_running():
-        return {"ok": False, "error": "Bot is already running."}
+def _log_dir(slug: str) -> Path:
+    return PROJECT_ROOT / "logs" / slug
 
-    # Remove kill switch file so the bot doesn't exit immediately
-    kill_path = PROJECT_ROOT / "KILL"
+
+def _stderr_path(slug: str) -> Path:
+    return _log_dir(slug) / "bot_stderr.log"
+
+
+def _kill_path(slug: str) -> Path:
+    return _log_dir(slug) / "KILL"
+
+
+def start(slug: str) -> dict[str, object]:
+    if is_running(slug):
+        return {"ok": False, "error": f"Bot for '{slug}' is already running."}
+
+    # Remove this profile's kill file so the bot doesn't exit immediately.
+    kill_path = _kill_path(slug)
     if kill_path.exists():
         kill_path.unlink()
 
     try:
-        # Ensure logs directory exists and open a fresh log file
-        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _log_fh = open(_LOG_PATH, "w", buffering=1)  # line-buffered
-
-        _process = subprocess.Popen(
-            [sys.executable, "-u", "main.py"],  # -u = unbuffered stdout
+        _log_dir(slug).mkdir(parents=True, exist_ok=True)
+        # line-buffered
+        log_fh = open(_stderr_path(slug), "w", buffering=1)  # noqa: SIM115
+        process = subprocess.Popen(
+            [sys.executable, "-u", "main.py", "--profile", slug],
             cwd=str(PROJECT_ROOT),
-            stdout=_log_fh,
-            stderr=subprocess.STDOUT,  # merge stderr into the same file
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
         )
     except Exception as exc:
-        if _log_fh is not None:
+        fh = _log_fhs.pop(slug, None)
+        if fh is not None:
             try:
-                _log_fh.close()
+                fh.close()
             except OSError:
                 pass
-            _log_fh = None
         return {"ok": False, "error": str(exc)}
 
-    return {"ok": True, "pid": _process.pid}
+    _processes[slug] = process
+    _log_fhs[slug] = log_fh
+    return {"ok": True, "pid": process.pid}
 
 
-def stop() -> dict[str, object]:
-    """Graceful stop: create KILL file so the bot flattens positions before exiting."""
-    global _process, _log_fh
-    if not is_running():
-        return {"ok": False, "error": "Bot is not running."}
+def stop(slug: str) -> dict[str, object]:
+    """Graceful stop: create the profile's KILL file so the bot flattens (stocks)
+    or exits cleanly before terminating."""
+    if not is_running(slug):
+        return {"ok": False, "error": f"Bot for '{slug}' is not running."}
 
-    kill_path = PROJECT_ROOT / "KILL"
+    kill_path = _kill_path(slug)
     kill_path.touch()
+    process = _processes.get(slug)
     try:
-        assert _process is not None
-        _process.wait(timeout=30)
+        assert process is not None
+        process.wait(timeout=30)
     except subprocess.TimeoutExpired:
-        assert _process is not None
-        _process.terminate()
-        _process.wait(timeout=5)
+        assert process is not None
+        process.terminate()
+        process.wait(timeout=5)
 
-    _cleanup()
+    _cleanup(slug)
     if kill_path.exists():
         kill_path.unlink()
     return {"ok": True}
 
 
-def is_running() -> bool:
-    global _process
-    if _process is None:
+def stop_all() -> dict[str, object]:
+    for slug in running_slugs():
+        stop(slug)
+    return {"ok": True}
+
+
+def is_running(slug: str) -> bool:
+    process = _processes.get(slug)
+    if process is None:
         return False
-    if _process.poll() is not None:
-        _cleanup()
+    if process.poll() is not None:
+        _cleanup(slug)
         return False
     return True
 
 
-def get_pid() -> int | None:
-    if _process is not None and is_running():
-        return _process.pid
+def running_slugs() -> list[str]:
+    return [slug for slug in list(_processes.keys()) if is_running(slug)]
+
+
+def get_pid(slug: str) -> int | None:
+    if is_running(slug):
+        process = _processes.get(slug)
+        return process.pid if process is not None else None
     return None
 
 
-def get_stderr_log(max_lines: int = 80) -> str:
+def status_map() -> dict[str, dict[str, object]]:
+    """Running state for every slug we have ever launched this session."""
+    return {
+        slug: {"running": is_running(slug), "pid": get_pid(slug)}
+        for slug in list(_processes.keys())
+    }
+
+
+def get_stderr_log(slug: str, max_lines: int = 80) -> str:
     """Return the last N lines of the bot's stdout/stderr log."""
-    if not _LOG_PATH.exists():
+    path = _stderr_path(slug)
+    if not path.exists():
         return ""
     try:
-        lines = _LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         return "\n".join(lines[-max_lines:])
     except OSError:
         return ""
@@ -96,12 +130,11 @@ def get_stderr_log(max_lines: int = 80) -> str:
 
 # ── internal ──────────────────────────────────────────────────────────────────
 
-def _cleanup() -> None:
-    global _process, _log_fh
-    _process = None
-    if _log_fh is not None:
+def _cleanup(slug: str) -> None:
+    _processes.pop(slug, None)
+    fh = _log_fhs.pop(slug, None)
+    if fh is not None:
         try:
-            _log_fh.close()
+            fh.close()
         except OSError:
             pass
-        _log_fh = None

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import date
 from pathlib import Path
 
@@ -12,14 +11,30 @@ router = APIRouter()
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 
-def _log_path() -> Path:
-    return PROJECT_ROOT / "logs" / f"{date.today().isoformat()}.jsonl"
+def _log_dir(profile: str | None) -> Path:
+    """Per-profile log directory; falls back to the active profile, then legacy."""
+    if profile:
+        return PROJECT_ROOT / "logs" / profile
+    try:
+        import sys
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from profiles import get_active_slug
+        slug = get_active_slug()
+        if slug:
+            return PROJECT_ROOT / "logs" / slug
+    except Exception:
+        pass
+    return PROJECT_ROOT / "logs"
+
+
+def _log_path(profile: str | None) -> Path:
+    return _log_dir(profile) / f"{date.today().isoformat()}.jsonl"
 
 
 @router.websocket("/ws/logs")
-async def websocket_logs(websocket: WebSocket) -> None:
+async def websocket_logs(websocket: WebSocket, profile: str | None = None) -> None:
     await websocket.accept()
-    log_file = _log_path()
+    log_file = _log_path(profile)
 
     # Send existing log lines on connect.
     if log_file.exists():
@@ -33,7 +48,7 @@ async def websocket_logs(websocket: WebSocket) -> None:
     try:
         while True:
             await asyncio.sleep(0.4)
-            log_file = _log_path()  # re-resolve in case day rolled over
+            log_file = _log_path(profile)  # re-resolve in case day rolled over
             if not log_file.exists():
                 continue
             size = log_file.stat().st_size

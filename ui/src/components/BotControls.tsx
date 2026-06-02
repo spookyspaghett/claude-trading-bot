@@ -6,9 +6,10 @@ import type { BotStatus } from '../types'
 interface Props {
   botStatus: BotStatus
   onStatusChange: () => void
+  slug: string
 }
 
-export default function BotControls({ botStatus, onStatusChange }: Props) {
+export default function BotControls({ botStatus, onStatusChange, slug }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [stderrLog, setStderrLog] = useState<string>('')
@@ -25,7 +26,7 @@ export default function BotControls({ botStatus, onStatusChange }: Props) {
 
   async function fetchStderr() {
     try {
-      const res = await fetch('/api/bot/stderr')
+      const res = await fetch(`/api/bot/stderr?profile=${encodeURIComponent(slug)}`)
       const data = await res.json() as { log: string }
       if (data.log.trim()) {
         setStderrLog(data.log)
@@ -44,7 +45,7 @@ export default function BotControls({ botStatus, onStatusChange }: Props) {
       setShowLog(false)
     }
     try {
-      const res = await fetch(`/api/bot/${endpoint}`, { method: 'POST' })
+      const res = await fetch(`/api/bot/${endpoint}?profile=${encodeURIComponent(slug)}`, { method: 'POST' })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
         throw new Error(`Server error ${res.status}${text ? ': ' + text.slice(0, 120) : ''}`)

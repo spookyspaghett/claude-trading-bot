@@ -10,9 +10,9 @@ router = APIRouter()
 
 
 @router.get("/account")
-async def get_account() -> dict[str, str]:
+async def get_account(profile: str | None = None) -> dict[str, str]:
     try:
-        client = get_trading_client()
+        client = get_trading_client(profile)
         acct = await asyncio.to_thread(client.get_account)
         return {
             "equity": str(acct.equity or "0"),
@@ -28,10 +28,10 @@ async def get_account() -> dict[str, str]:
 
 
 @router.get("/equity-history")
-async def get_equity_history() -> list[dict[str, object]]:
+async def get_equity_history(profile: str | None = None) -> list[dict[str, object]]:
     """30-day daily equity curve from Alpaca portfolio history."""
     try:
-        client = get_trading_client()
+        client = get_trading_client(profile)
         from alpaca.trading.requests import GetPortfolioHistoryRequest
         req = GetPortfolioHistoryRequest(period="1M", timeframe="1D")
         history = await asyncio.to_thread(client.get_portfolio_history, req)
@@ -56,10 +56,10 @@ async def get_equity_history() -> list[dict[str, object]]:
 
 
 @router.get("/pnl-intraday")
-async def get_intraday_pnl() -> list[dict[str, object]]:
+async def get_intraday_pnl(profile: str | None = None) -> list[dict[str, object]]:
     """1-minute P&L snapshots for today's session."""
     try:
-        client = get_trading_client()
+        client = get_trading_client(profile)
         from alpaca.trading.requests import GetPortfolioHistoryRequest
         req = GetPortfolioHistoryRequest(period="1D", timeframe="1Min")
         history = await asyncio.to_thread(client.get_portfolio_history, req)

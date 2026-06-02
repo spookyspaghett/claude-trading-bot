@@ -5,6 +5,7 @@ import type { Config } from '../types'
 
 interface Props {
   onRestart: () => void
+  slug: string
 }
 
 const DEFAULT: Config = {
@@ -90,21 +91,23 @@ function NumInput({
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ConfigEditor({ onRestart }: Props) {
+export default function ConfigEditor({ onRestart, slug }: Props) {
   const [cfg, setCfg] = useState<Config>(DEFAULT)
   const [symbolsText, setSymbolsText] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
 
+  const q = `?profile=${encodeURIComponent(slug)}`
+
   useEffect(() => {
-    fetch('/api/config')
+    fetch(`/api/config${q}`)
       .then(r => r.json())
       .then((data: Config) => {
         setCfg({ ...DEFAULT, ...data, strategy: { ...DEFAULT.strategy, ...data.strategy } })
         setSymbolsText(data.symbols.join(', '))
       })
       .catch(() => setSymbolsText(DEFAULT.symbols.join(', ')))
-  }, [])
+  }, [q])
 
   function setRisk(key: keyof Config['risk'], val: number) {
     setCfg(prev => ({ ...prev, risk: { ...prev.risk, [key]: val } }))
@@ -132,8 +135,8 @@ export default function ConfigEditor({ onRestart }: Props) {
     const symbols = symbolsText.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
     const payload: Config = { ...cfg, symbols }
     try {
-      await apiPut('/api/config', payload)
-      if (andRestart) { await apiPost('/api/bot/restart'); onRestart() }
+      await apiPut(`/api/config${q}`, payload)
+      if (andRestart) { await apiPost(`/api/bot/restart${q}`); onRestart() }
       setMsg({ text: andRestart ? 'Saved & restarted.' : 'Saved.', ok: true })
     } catch (err) {
       setMsg({ text: String(err), ok: false })

@@ -4,9 +4,10 @@ import { apiPost } from '../hooks/useApi'
 
 interface Props {
   onTriggered: () => void
+  slug: string
 }
 
-export default function KillSwitch({ onTriggered }: Props) {
+export default function KillSwitch({ onTriggered, slug }: Props) {
   const [confirming, setConfirming] = useState(false)
   const [loading, setLoading] = useState(false)
   const [triggered, setTriggered] = useState(false)
@@ -14,7 +15,7 @@ export default function KillSwitch({ onTriggered }: Props) {
   async function handleConfirm() {
     setLoading(true)
     try {
-      await apiPost('/api/kill')
+      await apiPost(`/api/kill?profile=${encodeURIComponent(slug)}`)
       setTriggered(true)
       onTriggered()
     } catch {
