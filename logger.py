@@ -8,10 +8,40 @@ from typing import Any, TextIO
 import structlog
 
 
+class _DailyRotatingFile:
+    """File-like object that rotates to a new .jsonl file each calendar day."""
+
+    def __init__(self, log_dir: Path) -> None:
+        self._log_dir = log_dir
+        self._date: date | None = None
+        self._fh: TextIO | None = None
+
+    def _rotate(self) -> None:
+        today = date.today()
+        if today != self._date:
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except OSError:
+                    pass
+            self._fh = open(  # noqa: SIM115
+                self._log_dir / f"{today.isoformat()}.jsonl", "a", encoding="utf-8"
+            )
+            self._date = today
+
+    def write(self, s: str) -> int:
+        self._rotate()
+        assert self._fh is not None
+        return self._fh.write(s)
+
+    def flush(self) -> None:
+        if self._fh is not None:
+            self._fh.flush()
+
+
 def setup_logging(log_dir: Path = Path("logs")) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / f"{date.today().isoformat()}.jsonl"
-    log_fh: TextIO = open(log_file, "a", encoding="utf-8")  # noqa: SIM115
+    log_fh: Any = _DailyRotatingFile(log_dir)
 
     processors: list[Any] = [
         structlog.stdlib.add_log_level,
