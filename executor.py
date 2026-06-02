@@ -31,10 +31,12 @@ class OrderExecutor:
         trailing_stop_pct: float = 10.0,
         loser_cut_pct: Decimal = Decimal("7"),
         enable_claude_filter: bool = False,
+        fractional: bool = False,
     ) -> None:
         self._broker = broker
         self._risk = risk
         self._entry_order_type = entry_order_type
+        self._fractional = fractional
         self._trailing_stop_pct = trailing_stop_pct
         self._loser_cut_threshold = loser_cut_pct / Decimal("100")
         # order_id → (Order, direction)
@@ -103,12 +105,12 @@ class OrderExecutor:
             log_rejection(order_id="N/A", symbol=signal.symbol, reason=reason)
             return
 
-        qty = self._risk.compute_qty(signal.entry_price)
+        qty = self._risk.compute_qty(signal.entry_price, fractional=self._fractional)
         if qty <= Decimal("0"):
             log_rejection(
                 order_id="N/A",
                 symbol=signal.symbol,
-                reason="position size computed as 0 shares",
+                reason="position size computed as 0",
             )
             return
 

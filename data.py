@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from alpaca.data.live import StockDataStream
+from alpaca.data.live import CryptoDataStream, StockDataStream
 from alpaca.data.models import Bar
 
 if TYPE_CHECKING:
@@ -66,6 +66,7 @@ class DataFeed:
     def __init__(self, config: Config) -> None:
         self._api_key = config.alpaca_api_key
         self._secret_key = config.alpaca_secret_key
+        self._is_crypto = config.asset_class == "crypto"
         self._symbols = list(config.symbols)
         self._queue: asyncio.Queue[Bar | AggregatedBar] = asyncio.Queue(maxsize=1000)
         self._aggregators_5m: dict[str, BarAggregator] = {
@@ -103,7 +104,10 @@ class DataFeed:
         while True:
             stream: Any = None
             try:
-                stream = StockDataStream(self._api_key, self._secret_key)
+                if self._is_crypto:
+                    stream = CryptoDataStream(self._api_key, self._secret_key)
+                else:
+                    stream = StockDataStream(self._api_key, self._secret_key)
                 stream.subscribe_bars(self._on_bar, *self._symbols)
                 self._connected = True
                 delay = 1.0

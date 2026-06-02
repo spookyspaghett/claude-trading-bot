@@ -71,11 +71,25 @@ class DonchianConfig(BaseModel):
     long_only: bool = True
 
 
+class TrendSRConfig(BaseModel):
+    """Trend + Support/Resistance breakout (crypto-oriented, also works on stocks)."""
+    ma_fast: int = Field(ge=2, le=400, default=21)
+    ma_slow: int = Field(ge=3, le=800, default=55)
+    pivot_lookback: int = Field(ge=2, le=200, default=20)
+    pivot_strength: int = Field(ge=1, le=20, default=3)
+    atr_period: int = Field(ge=2, le=100, default=14)
+    atr_mult: float = Field(ge=0.1, le=20.0, default=2.0)
+    trailing_activation_pct: float = Field(ge=0.0, le=50.0, default=3.0)
+    trailing_pct: float = Field(ge=0.0, le=50.0, default=8.0)
+    long_only: bool = True
+
+
 class StrategyConfig(BaseModel):
-    name: Literal["orb", "ema", "donchian"] = "orb"
+    name: Literal["orb", "ema", "donchian", "trend_sr"] = "orb"
     orb: OrbConfig = OrbConfig(opening_range_minutes=15)
     ema: EmaConfig = EmaConfig()
     donchian: DonchianConfig = DonchianConfig()
+    trend_sr: TrendSRConfig = TrendSRConfig()
 
 
 class AiConfig(BaseModel):
@@ -85,6 +99,7 @@ class AiConfig(BaseModel):
 
 class Config(BaseModel):
     live: bool = False
+    asset_class: Literal["stock", "crypto"] = "stock"
     symbols: list[str] = Field(min_length=1)
     risk: RiskConfig
     strategy: StrategyConfig
@@ -95,13 +110,21 @@ class Config(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def inject_env_credentials(cls, data: Any) -> Any:
+        """Resolve Alpaca credentials.
+
+        Keys may be supplied directly (e.g. from a profile). Only fall back to
+        the .env / environment when they are absent, and only raise when neither
+        source provides them.
+        """
+        if not isinstance(data, dict):
+            return data
         load_dotenv()
-        api_key = os.environ.get("ALPACA_API_KEY", "")
-        secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+        api_key = data.get("alpaca_api_key") or os.environ.get("ALPACA_API_KEY", "")
+        secret_key = data.get("alpaca_secret_key") or os.environ.get("ALPACA_SECRET_KEY", "")
         if not api_key:
-            raise ValueError("ALPACA_API_KEY not set in environment or .env file")
+            raise ValueError("Alpaca API key not set (profile or ALPACA_API_KEY in .env)")
         if not secret_key:
-            raise ValueError("ALPACA_SECRET_KEY not set in environment or .env file")
+            raise ValueError("Alpaca secret key not set (profile or ALPACA_SECRET_KEY in .env)")
         data["alpaca_api_key"] = api_key
         data["alpaca_secret_key"] = secret_key
         return data

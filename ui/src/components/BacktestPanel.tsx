@@ -121,6 +121,11 @@ export default function BacktestPanel() {
   const [trailingActivationPct, setTrailingActivationPct] = useState(2.0)
   const [trailingPct, setTrailingPct] = useState(8.0)
   const [startingEquity, setStartingEquity] = useState(500000)
+  const [strategy, setStrategy] = useState<'auto' | 'trend_sr'>('auto')
+  const [maFast, setMaFast] = useState(21)
+  const [maSlow, setMaSlow] = useState(55)
+  const [pivotLookback, setPivotLookback] = useState(20)
+  const [pivotStrength, setPivotStrength] = useState(3)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -166,6 +171,11 @@ export default function BacktestPanel() {
       form.append('trailing_activation_pct', String(trailingActivationPct))
       form.append('trailing_pct', String(trailingPct))
       form.append('starting_equity', String(startingEquity))
+      form.append('strategy', strategy)
+      form.append('ma_fast', String(maFast))
+      form.append('ma_slow', String(maSlow))
+      form.append('pivot_lookback', String(pivotLookback))
+      form.append('pivot_strength', String(pivotStrength))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -276,8 +286,47 @@ export default function BacktestPanel() {
                 </div>
               </div>
               <p className="text-slate-500 pt-1 border-t border-slate-700">
-                Strategy is chosen automatically: daily files → Donchian Breakout · 1-minute files → ORB
+                Auto: daily files → Donchian Breakout · 1-minute files → ORB. Or force Trend/SR below.
               </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3 items-end">
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Strategy</label>
+                <select value={strategy} onChange={e => setStrategy(e.target.value as 'auto' | 'trend_sr')}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
+                  <option value="auto">Auto (Donchian / ORB)</option>
+                  <option value="trend_sr">Trend/SR (crypto)</option>
+                </select>
+              </div>
+              {strategy === 'trend_sr' && (
+                <>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Fast MA</label>
+                    <input type="number" min={2} step={1} value={maFast}
+                      onChange={e => setMaFast(Math.max(2, parseInt(e.target.value) || 21))}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Slow MA</label>
+                    <input type="number" min={3} step={1} value={maSlow}
+                      onChange={e => setMaSlow(Math.max(3, parseInt(e.target.value) || 55))}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Pivot lookback</label>
+                    <input type="number" min={2} step={1} value={pivotLookback}
+                      onChange={e => setPivotLookback(Math.max(2, parseInt(e.target.value) || 20))}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Pivot strength</label>
+                    <input type="number" min={1} step={1} value={pivotStrength}
+                      onChange={e => setPivotStrength(Math.max(1, parseInt(e.target.value) || 3))}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-3 items-end">

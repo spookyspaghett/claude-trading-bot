@@ -49,6 +49,14 @@ class BrokerClient:
             paper=not config.live,
         )
 
+        # Crypto trades 24/7 and only accepts GTC/IOC/FOK (not DAY); its prices
+        # also aren't 2-dp, so we skip the stock rounding on limit/stop prices.
+        self._is_crypto = config.asset_class == "crypto"
+        self._tif = TimeInForce.GTC if self._is_crypto else TimeInForce.DAY
+
+    def _round_price(self, price: Decimal) -> float:
+        return float(price) if self._is_crypto else round(float(price), 2)
+
     # ── account / positions ─────────────────────────────────────────────────
 
     async def get_account(self) -> TradeAccount:
@@ -69,7 +77,7 @@ class BrokerClient:
             symbol=symbol,
             qty=float(qty),
             side=side,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=self._tif,
         )
         return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]
 
@@ -84,8 +92,8 @@ class BrokerClient:
             symbol=symbol,
             qty=float(qty),
             side=side,
-            time_in_force=TimeInForce.DAY,
-            limit_price=round(float(limit_price), 2),
+            time_in_force=self._tif,
+            limit_price=self._round_price(limit_price),
         )
         return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]
 
@@ -100,8 +108,8 @@ class BrokerClient:
             symbol=symbol,
             qty=float(qty),
             side=side,
-            time_in_force=TimeInForce.DAY,
-            stop_price=round(float(stop_price), 2),
+            time_in_force=self._tif,
+            stop_price=self._round_price(stop_price),
         )
         return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]
 
@@ -116,7 +124,7 @@ class BrokerClient:
             symbol=symbol,
             qty=float(qty),
             side=side,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=self._tif,
             trail_percent=trail_percent,
         )
         return await asyncio.to_thread(self._client.submit_order, request)  # type: ignore[return-value]

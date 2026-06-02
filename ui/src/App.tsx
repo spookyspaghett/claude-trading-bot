@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { TrendingUp, LayoutDashboard, FlaskConical } from 'lucide-react'
+import { TrendingUp, LayoutDashboard, FlaskConical, Wallet } from 'lucide-react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { usePolling } from './hooks/useApi'
 import StatusBar from './components/StatusBar'
@@ -11,9 +11,10 @@ import EquityChart from './components/EquityChart'
 import SignalFeed from './components/SignalFeed'
 import ConfigEditor from './components/ConfigEditor'
 import BacktestPanel from './components/BacktestPanel'
+import ProfilesPanel from './components/ProfilesPanel'
 import type { Account, BotStatus, EquityPoint, PnLPoint, Position } from './types'
 
-type Tab = 'dashboard' | 'backtest'
+type Tab = 'dashboard' | 'backtest' | 'profiles'
 
 const DEFAULT_STATUS: BotStatus = { running: false, pid: null }
 const DEFAULT_ACCOUNT: Account = { equity: '0', portfolio_value: '0', buying_power: '0', cash: '0', daily_pnl: '0' }
@@ -71,6 +72,15 @@ export default function App() {
               <FlaskConical size={12} />
               Backtest
             </button>
+            <button
+              onClick={() => setTab('profiles')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                tab === 'profiles' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Wallet size={12} />
+              Profiles
+            </button>
           </div>
 
           {/* Status badges */}
@@ -89,7 +99,7 @@ export default function App() {
 
       {/* ── Main content ───────────────────────────────────────────────────── */}
       <main className="flex-1 p-4 max-w-screen-2xl mx-auto w-full">
-        {tab === 'dashboard' ? (
+        {tab === 'dashboard' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Row 1 */}
             <PositionsTable positions={positions} />
@@ -104,8 +114,10 @@ export default function App() {
               <ConfigEditor onRestart={refreshBot} />
             </div>
           </div>
-        ) : (
-          <BacktestPanel />
+        )}
+        {tab === 'backtest' && <BacktestPanel />}
+        {tab === 'profiles' && (
+          <ProfilesPanel botRunning={botStatus.running} onActivated={refreshBot} />
         )}
       </main>
     </div>

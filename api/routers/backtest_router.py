@@ -130,6 +130,11 @@ async def run_backtest_upload(
     trailing_activation_pct: float = Form(2.0),
     trailing_pct: float = Form(8.0),
     starting_equity: float = Form(500000.0),
+    strategy: str = Form("auto"),
+    ma_fast: int = Form(21),
+    ma_slow: int = Form(55),
+    pivot_lookback: int = Form(20),
+    pivot_strength: int = Form(3),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -173,6 +178,11 @@ async def run_backtest_upload(
             trailing_activation_pct=max(0.0, trailing_activation_pct),
             trailing_pct=max(0.0, trailing_pct),
             starting_equity=Decimal(str(max(100.0, starting_equity))),
+            strategy=strategy if strategy in ("auto", "trend_sr") else "auto",
+            ma_fast=max(2, ma_fast),
+            ma_slow=max(3, ma_slow),
+            pivot_lookback=max(2, pivot_lookback),
+            pivot_strength=max(1, pivot_strength),
         )
 
         payload = _result_to_dict(result)

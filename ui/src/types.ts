@@ -78,8 +78,23 @@ export interface ConfigDonchian {
   long_only: boolean
 }
 
+export interface ConfigTrendSR {
+  ma_fast: number
+  ma_slow: number
+  pivot_lookback: number
+  pivot_strength: number
+  atr_period: number
+  atr_mult: number
+  trailing_activation_pct: number
+  trailing_pct: number
+  long_only: boolean
+}
+
+export type AssetClass = 'stock' | 'crypto'
+
 export interface Config {
   live: boolean
+  asset_class: AssetClass
   symbols: string[]
   risk: ConfigRisk
   strategy: {
@@ -87,5 +102,19 @@ export interface Config {
     orb: ConfigOrb
     ema: ConfigEma
     donchian: ConfigDonchian
+    trend_sr: ConfigTrendSR
   }
+}
+
+// ── Profiles ───────────────────────────────────────────────────────────────────
+
+export interface ProfileSummary {
+  slug: string
+  name: string
+  asset_class: AssetClass
+  live: boolean
+  symbols: string[]
+  strategy: string
+  has_keys: boolean
+  active: boolean
 }

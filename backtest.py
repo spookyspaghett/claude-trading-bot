@@ -10,8 +10,11 @@ from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.historical import (
+    CryptoHistoricalDataClient,
+    StockHistoricalDataClient,
+)
+from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from risk import RiskManager
@@ -535,6 +538,115 @@ def _run_with_daily_bars(
     )
 
 
+def _run_with_trend_sr(
+    symbol: str,
+    bars: list[BacktestBar],
+    start: date,
+    end: date,
+    risk_config: RiskConfig,
+    *,
+    ma_fast: int = 21,
+    ma_slow: int = 55,
+    pivot_lookback: int = 20,
+    pivot_strength: int = 3,
+    atr_period: int = 14,
+    atr_mult: float = 2.0,
+    trailing_activation_pct: float = 3.0,
+    trailing_pct: float = 8.0,
+    long_only: bool = True,
+    starting_equity: Decimal = Decimal("500000"),
+) -> BacktestResult:
+    """Replay the Trend + Support/Resistance strategy over OHLC bars.
+
+    The strategy itself decides entries and exits (emitting BUY/SELL/FLAT); here
+    we translate those into fills at the signalling bar's close and track P&L.
+    """
+    from config_loader import TrendSRConfig
+    from strategy import Direction, TrendSRStrategy
+
+    bars = sorted(bars, key=lambda b: b.timestamp)
+    cfg = TrendSRConfig(
+        ma_fast=ma_fast, ma_slow=ma_slow,
+        pivot_lookback=pivot_lookback, pivot_strength=pivot_strength,
+        atr_period=atr_period, atr_mult=atr_mult,
+        trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
+        long_only=long_only,
+    )
+    strat = TrendSRStrategy(cfg, [symbol], trade_24_7=True)
+    risk = RiskManager(
+        max_position_usd=risk_config.max_position_usd,
+        stop_loss_pct=risk_config.stop_loss_pct,
+        daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
+        max_open_positions=risk_config.max_open_positions,
+    )
+
+    trades: list[Trade] = []
+    equity = starting_equity
+    equity_curve: list[dict[str, object]] = []
+    open_trade: Trade | None = None
+
+    for bar in bars:
+        bar_et = _to_et(bar.timestamp)
+        sig = strat.on_bar(bar)  # type: ignore[arg-type]
+        direction = sig.direction if sig is not None else None
+
+        if direction in (Direction.BUY, Direction.SELL) and open_trade is None:
+            assert sig is not None
+            qty = risk.compute_qty(sig.entry_price, fractional=True)
+            if qty > Decimal("0"):
+                open_trade = Trade(
+                    symbol=symbol, direction=sig.direction.value,
+                    entry_time=bar_et, entry_price=sig.entry_price,
+                    stop_price=sig.stop_price, qty=qty,
+                )
+        elif direction == Direction.FLAT and open_trade is not None:
+            assert sig is not None
+            exit_px = sig.entry_price
+            pnl = (
+                (exit_px - open_trade.entry_price) * open_trade.qty
+                if open_trade.direction == "BUY"
+                else (open_trade.entry_price - exit_px) * open_trade.qty
+            )
+            open_trade.exit_time = bar_et
+            open_trade.exit_price = exit_px
+            open_trade.exit_reason = "signal"
+            open_trade.pnl = pnl
+            equity += pnl
+            trades.append(open_trade)
+            open_trade = None
+
+        equity_curve.append({
+            "timestamp": int(bar_et.timestamp()),
+            "equity": float(equity),
+        })
+
+    if open_trade is not None:
+        last = bars[-1]
+        exit_px = Decimal(str(last.close))
+        pnl = (
+            (exit_px - open_trade.entry_price) * open_trade.qty
+            if open_trade.direction == "BUY"
+            else (open_trade.entry_price - exit_px) * open_trade.qty
+        )
+        open_trade.exit_time = _to_et(last.timestamp)
+        open_trade.exit_price = exit_px
+        open_trade.exit_reason = "end"
+        open_trade.pnl = pnl
+        equity += pnl
+        trades.append(open_trade)
+
+    trail_desc = f"{trailing_activation_pct:.0f}%->{trailing_pct:.0f}%"
+    name = (f"Trend/SR (MA {ma_fast}/{ma_slow}, "
+            f"pivot {pivot_lookback}/{pivot_strength}, "
+            f"ATR({atr_period})x{atr_mult}, trail {trail_desc}"
+            f"{', long only' if long_only else ''})")
+    return BacktestResult(
+        symbol=symbol, start_date=str(start), end_date=str(end),
+        trades=trades, equity_curve=equity_curve,
+        stats=_compute_stats(trades, equity_curve), strategy_used=name,
+    )
+
+
 def _daily_strategy_name(
     lookback: int,
     long_only: bool,
@@ -576,15 +688,28 @@ def _run_sync(
     risk_config: RiskConfig,
     starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
-    client  = StockHistoricalDataClient(api_key, secret_key)
-    request = StockBarsRequest(
-        symbol_or_symbols=symbol,
-        timeframe=TimeFrame(1, TimeFrameUnit.Minute),
-        start=datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
-        end=datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc),
-        feed=DataFeed.IEX,
-    )
-    raw          = client.get_stock_bars(request)
+    is_crypto = "/" in symbol
+    start_dt = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
+    end_dt = datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc)
+    if is_crypto:
+        crypto_client = CryptoHistoricalDataClient(api_key, secret_key)
+        crypto_req = CryptoBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+            start=start_dt,
+            end=end_dt,
+        )
+        raw = crypto_client.get_crypto_bars(crypto_req)
+    else:
+        client = StockHistoricalDataClient(api_key, secret_key)
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame(1, TimeFrameUnit.Minute),
+            start=start_dt,
+            end=end_dt,
+            feed=DataFeed.IEX,
+        )
+        raw = client.get_stock_bars(request)
     alpaca_bars  = list(raw[symbol]) if symbol in raw else []
 
     bars: list[BacktestBar] = [
@@ -768,12 +893,27 @@ def _run_sync_from_bars(
     trailing_activation_pct: float = 2.0,
     trailing_pct: float = 8.0,
     starting_equity: Decimal = Decimal("500000"),
+    strategy: str = "auto",
+    ma_fast: int = 21,
+    ma_slow: int = 55,
+    pivot_lookback: int = 20,
+    pivot_strength: int = 3,
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
 
     et_dates = [_to_et(b.timestamp).date() for b in bars]
     start, end = min(et_dates), max(et_dates)
+
+    if strategy == "trend_sr":
+        return _run_with_trend_sr(
+            symbol, bars, start, end, risk_config,
+            ma_fast=ma_fast, ma_slow=ma_slow,
+            pivot_lookback=pivot_lookback, pivot_strength=pivot_strength,
+            atr_period=atr_period, atr_mult=atr_multiplier,
+            trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
+            long_only=long_only, starting_equity=starting_equity,
+        )
 
     if _is_daily_data(bars):
         return _run_with_daily_bars(
@@ -893,10 +1033,15 @@ async def run_backtest_from_file(
     trailing_activation_pct: float = 2.0,
     trailing_pct: float = 8.0,
     starting_equity: Decimal = Decimal("500000"),
+    strategy: str = "auto",
+    ma_fast: int = 21,
+    ma_slow: int = 55,
+    pivot_lookback: int = 20,
+    pivot_strength: int = 3,
 ) -> BacktestResult:
     return await asyncio.to_thread(
         _run_sync_from_bars, symbol, bars, orb_config, risk_config,
         lookback, long_only, trend_ma, fast_ma, atr_period, atr_multiplier,
         use_atr_stop, volume_filter_days, trailing_activation_pct, trailing_pct,
-        starting_equity,
+        starting_equity, strategy, ma_fast, ma_slow, pivot_lookback, pivot_strength,
     )

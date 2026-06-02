@@ -16,8 +16,8 @@ def get_trading_client() -> TradingClient:
     if _client is None:
         import sys
         sys.path.insert(0, str(PROJECT_ROOT))
-        from config_loader import load_config
-        cfg = load_config(CONFIG_PATH)
+        from profiles import load_active_config
+        cfg = load_active_config()
         _client = TradingClient(
             api_key=cfg.alpaca_api_key,
             secret_key=cfg.alpaca_secret_key,

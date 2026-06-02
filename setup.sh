@@ -220,6 +220,7 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 cd "$SCRIPT_DIR"
 mkdir -p logs
+mkdir -p profiles   # gitignored store for switchable trading profiles (keys live here)
 # Fix ownership — setup runs as root but the service runs as $CURRENT_USER
 chown -R "$CURRENT_USER":"$CURRENT_USER" "$SCRIPT_DIR"
 

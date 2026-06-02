@@ -9,6 +9,7 @@ interface Props {
 
 const DEFAULT: Config = {
   live: false,
+  asset_class: 'stock',
   symbols: ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA'],
   risk: { max_position_usd: 50000, stop_loss_pct: 1.0, daily_loss_limit_usd: 500, max_open_positions: 4 },
   strategy: {
@@ -16,6 +17,10 @@ const DEFAULT: Config = {
     orb: { opening_range_minutes: 15, entry_order_type: 'limit', eod_exit_time: '15:50' },
     ema: { fast_period: 9, slow_period: 21, entry_order_type: 'market', eod_exit_time: '15:50' },
     donchian: { lookback_days: 40, trend_ma: 200, trailing_activation_pct: 1.0, trailing_pct: 8.0, long_only: true },
+    trend_sr: {
+      ma_fast: 21, ma_slow: 55, pivot_lookback: 20, pivot_strength: 3,
+      atr_period: 14, atr_mult: 2.0, trailing_activation_pct: 3.0, trailing_pct: 8.0, long_only: true,
+    },
   },
 }
 
@@ -113,9 +118,14 @@ export default function ConfigEditor({ onRestart }: Props) {
   function setDon(key: keyof Config['strategy']['donchian'], val: number | boolean) {
     setCfg(prev => ({ ...prev, strategy: { ...prev.strategy, donchian: { ...prev.strategy.donchian, [key]: val } } }))
   }
+  function setTsr(key: keyof Config['strategy']['trend_sr'], val: number | boolean) {
+    setCfg(prev => ({ ...prev, strategy: { ...prev.strategy, trend_sr: { ...prev.strategy.trend_sr, [key]: val } } }))
+  }
   function setStrategyName(name: string) {
     setCfg(prev => ({ ...prev, strategy: { ...prev.strategy, name } }))
   }
+
+  const isCrypto = cfg.asset_class === 'crypto'
 
   async function handleSave(andRestart: boolean) {
     setSaving(true); setMsg(null)
@@ -136,9 +146,16 @@ export default function ConfigEditor({ onRestart }: Props) {
 
   return (
     <div className="bg-slate-900 rounded-xl border border-slate-700">
-      <div className="px-4 py-3 border-b border-slate-700">
-        <h2 className="text-sm font-semibold text-slate-200">Configuration</h2>
-        <p className="text-xs text-slate-500 mt-0.5">Changes take effect on next bot start. API credentials stay in .env.</p>
+      <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-200">Configuration</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Edits the active profile. Changes take effect on next bot start.</p>
+        </div>
+        <span className={`text-[10px] font-bold px-2 py-1 rounded border ${
+          isCrypto ? 'text-amber-300 bg-amber-950 border-amber-800' : 'text-sky-300 bg-sky-950 border-sky-800'
+        }`}>
+          {isCrypto ? 'CRYPTO · 24/7' : 'STOCK'}
+        </span>
       </div>
 
       <div className="p-4 space-y-6">
@@ -208,12 +225,13 @@ export default function ConfigEditor({ onRestart }: Props) {
 
           {/* ── Strategy selector ─────────────────────────────────────────── */}
           <Section title="Strategy">
-            {/* Tabs */}
+            {/* Tabs — ORB is stock-only (built around the market open) */}
             <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 w-fit">
               {[
-                { id: 'orb',      label: 'ORB' },
+                ...(isCrypto ? [] : [{ id: 'orb', label: 'ORB' }]),
                 { id: 'ema',      label: 'EMA' },
                 { id: 'donchian', label: 'Donchian' },
+                { id: 'trend_sr', label: 'Trend/SR' },
               ].map(({ id, label }) => (
                 <button key={id}
                   onClick={() => setStrategyName(id)}
@@ -380,6 +398,87 @@ export default function ConfigEditor({ onRestart }: Props) {
                     </label>
                     <p className="text-[10px] text-slate-600 mt-0.5">Recommended: ON — short selling adds significant risk</p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Trend/SR settings ─────────────────────────────────────── */}
+            {mode === 'trend_sr' && (
+              <div className="space-y-2.5 pt-1">
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  <span className="text-slate-300 font-medium">Trend + Support/Resistance</span> — buys breakouts above the
+                  latest swing-high resistance while the fast MA is above the slow MA (uptrend). Stops use the nearest support
+                  or an ATR distance, then trail the peak. Built for 24/7 crypto; long-only is recommended.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label tip="Fast moving-average period. Must be smaller than the slow MA. The fast>slow relationship defines the uptrend filter that gates long entries.">
+                      Fast MA
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.ma_fast} min={2} max={400}
+                      onChange={v => setTsr('ma_fast', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Slow moving-average period. Entries only fire when the fast MA is above this (longs) — keeps you trading with the trend.">
+                      Slow MA
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.ma_slow} min={3} max={800}
+                      onChange={v => setTsr('ma_slow', v)} />
+                  </div>
+                  <div>
+                    <Label tip="How many bars back to scan for swing-high / swing-low pivots that define resistance and support levels.">
+                      Pivot lookback
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.pivot_lookback} min={2} max={200}
+                      onChange={v => setTsr('pivot_lookback', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Bars required on each side of a pivot to confirm it. Higher = fewer but stronger S/R levels. 3 is a good default.">
+                      Pivot strength
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.pivot_strength} min={1} max={20}
+                      onChange={v => setTsr('pivot_strength', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Lookback period for the Average True Range used to size the initial stop distance.">
+                      ATR period
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.atr_period} min={2} max={100}
+                      onChange={v => setTsr('atr_period', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Initial stop = entry − ATR × this multiplier (bounded by the nearest support). Larger = more room, fewer stop-outs.">
+                      ATR multiplier
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.atr_mult} step={0.1} min={0.1} max={20}
+                      onChange={v => setTsr('atr_mult', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Once the trade is up this %, the trailing stop activates and follows the peak.">
+                      Trail activates after (%)
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.trailing_activation_pct} step={0.5} min={0} max={50}
+                      onChange={v => setTsr('trailing_activation_pct', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Once active, the stop trails this % below the highest price reached. Wider = lets winners run further.">
+                      Trailing distance (%)
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.trailing_pct} step={0.5} min={0} max={50}
+                      onChange={v => setTsr('trailing_pct', v)} />
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 pt-0.5">
+                  <input
+                    type="checkbox" id="tsr-long-only"
+                    checked={cfg.strategy.trend_sr.long_only}
+                    onChange={e => setTsr('long_only', e.target.checked)}
+                    className="mt-0.5 accent-blue-500"
+                  />
+                  <label htmlFor="tsr-long-only" className="text-xs text-slate-300 font-medium cursor-pointer flex items-center gap-1">
+                    Long only (no short selling)
+                    <Tip text="Crypto cannot be shorted on Alpaca, so keep this ON for crypto profiles. On stocks you may turn it off to allow shorts on breakdowns below support." />
+                  </label>
                 </div>
               </div>
             )}

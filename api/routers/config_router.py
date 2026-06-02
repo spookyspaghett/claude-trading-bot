@@ -3,16 +3,21 @@ from __future__ import annotations
 import sys
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-import yaml
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_loader import DonchianConfig, EmaConfig, OrbConfig, StrategyConfig  # noqa: E402
+from config_loader import StrategyConfig  # noqa: E402
+from profiles import (  # noqa: E402
+    get_active_slug,
+    load_active_config,
+    load_profile,
+    save_profile,
+)
 
 router = APIRouter()
 
@@ -29,6 +34,7 @@ class RiskPublic(BaseModel):
 
 class ConfigPublic(BaseModel):
     live: bool
+    asset_class: Literal["stock", "crypto"] = "stock"
     symbols: list[str]
     risk: RiskPublic
     strategy: StrategyConfig
@@ -36,59 +42,52 @@ class ConfigPublic(BaseModel):
 
 @router.get("/config")
 async def get_config() -> ConfigPublic:
+    """Return the editable settings of the active profile."""
     try:
-        raw: dict[str, Any] = yaml.safe_load(
-            (PROJECT_ROOT / "config.yaml").read_text(encoding="utf-8")
+        cfg = load_active_config()
+        return ConfigPublic(
+            live=cfg.live,
+            asset_class=cfg.asset_class,
+            symbols=cfg.symbols,
+            risk=RiskPublic(
+                max_position_usd=float(cfg.risk.max_position_usd),
+                stop_loss_pct=float(cfg.risk.stop_loss_pct),
+                daily_loss_limit_usd=float(cfg.risk.daily_loss_limit_usd),
+                max_open_positions=cfg.risk.max_open_positions,
+            ),
+            strategy=cfg.strategy,
         )
-        return ConfigPublic(**raw)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.put("/config")
 async def put_config(body: ConfigPublic) -> dict[str, str]:
+    """Merge edits into the active profile, preserving keys, name and AI settings."""
     try:
-        orb = body.strategy.orb
-        ema = body.strategy.ema
-        don = body.strategy.donchian
-        data: dict[str, Any] = {
-            "live": body.live,
-            "symbols": body.symbols,
-            "risk": {
-                "max_position_usd":    float(body.risk.max_position_usd),
-                "stop_loss_pct":       float(body.risk.stop_loss_pct),
-                "daily_loss_limit_usd": float(body.risk.daily_loss_limit_usd),
-                "max_open_positions":  body.risk.max_open_positions,
-                "trailing_stop_pct":   10.0,
-                "loser_cut_pct":       7.0,
-            },
-            "ai": {"enable_research": False, "enable_claude_filter": False},
-            "strategy": {
-                "name": body.strategy.name,
-                "orb": {
-                    "opening_range_minutes": orb.opening_range_minutes,
-                    "entry_order_type":      orb.entry_order_type,
-                    "eod_exit_time":         orb.eod_exit_time,
-                },
-                "ema": {
-                    "fast_period":      ema.fast_period,
-                    "slow_period":      ema.slow_period,
-                    "entry_order_type": ema.entry_order_type,
-                    "eod_exit_time":    ema.eod_exit_time,
-                },
-                "donchian": {
-                    "lookback_days":            don.lookback_days,
-                    "trend_ma":                 don.trend_ma,
-                    "trailing_activation_pct":  don.trailing_activation_pct,
-                    "trailing_pct":             don.trailing_pct,
-                    "long_only":                don.long_only,
-                },
-            },
+        slug = get_active_slug()
+        if slug is None:
+            raise ValueError("No active profile to save into.")
+
+        existing: dict[str, Any] = load_profile(slug)
+        prev_risk = existing.get("risk", {}) or {}
+
+        existing["live"] = body.live
+        existing["asset_class"] = body.asset_class
+        existing["symbols"] = body.symbols
+        existing["risk"] = {
+            "max_position_usd":     float(body.risk.max_position_usd),
+            "stop_loss_pct":        float(body.risk.stop_loss_pct),
+            "daily_loss_limit_usd": float(body.risk.daily_loss_limit_usd),
+            "max_open_positions":   body.risk.max_open_positions,
+            # Preserve advanced risk knobs not exposed in the basic editor.
+            "trailing_stop_pct":    prev_risk.get("trailing_stop_pct", 10.0),
+            "loser_cut_pct":        prev_risk.get("loser_cut_pct", 7.0),
         }
-        (PROJECT_ROOT / "config.yaml").write_text(
-            yaml.dump(data, default_flow_style=False, allow_unicode=True),
-            encoding="utf-8",
-        )
+        existing["strategy"] = body.strategy.model_dump()
+
+        save_profile(slug, existing)
+
         from api.deps import reset_client
         reset_client()
         return {"status": "saved"}

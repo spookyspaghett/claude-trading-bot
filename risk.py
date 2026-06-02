@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 
 
@@ -24,11 +24,18 @@ class RiskManager:
         self._daily_limit_hit: bool = False
         self._kill_switch_triggered: bool = False
 
-    def compute_qty(self, price: Decimal) -> Decimal:
-        """Return max whole-share count given price and max position size."""
+    def compute_qty(self, price: Decimal, fractional: bool = False) -> Decimal:
+        """Return position size for the given price and max position size.
+
+        Stocks use whole shares; crypto (``fractional=True``) allows fractional
+        quantities, rounded down to 6 decimal places.
+        """
         if price <= Decimal("0"):
             return Decimal("0")
-        return Decimal(int(self._max_position_usd / price))
+        raw = self._max_position_usd / price
+        if fractional:
+            return raw.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+        return Decimal(int(raw))
 
     def compute_stop_price(self, entry_price: Decimal, side: str) -> Decimal:
         """Return stop-loss price. side must be 'buy' or 'sell'."""

@@ -3,6 +3,7 @@
 key+secret.txt
 *.key
 *.secret
+profiles/
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from datetime import time as dtime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
 from alpaca.data.enums import DataFeed
+from alpaca.data.historical import (
+    CryptoHistoricalDataClient,
+    StockHistoricalDataClient,
+)
+from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.enums import OrderSide
 
@@ -26,6 +29,10 @@ _EOD_END     = dtime(16, 12)
 _OPEN_START  = dtime(9, 31)
 _OPEN_END    = dtime(9, 36)
 _MKTCLOSE    = dtime(16, 0)
+
+# Crypto daily scan window (UTC) — bars roll at 00:00 UTC.
+_CRYPTO_SCAN_START = dtime(0, 5)
+_CRYPTO_SCAN_END   = dtime(0, 20)
 
 
 class DonchianRunner:
@@ -45,12 +52,18 @@ class DonchianRunner:
         strategy: DonchianLiveStrategy,
         api_key: str,
         secret_key: str,
+        asset_class: str = "stock",
     ) -> None:
         self._symbols      = symbols
         self._broker       = broker
         self._risk         = risk
         self._strategy     = strategy
-        self._data_client  = StockHistoricalDataClient(api_key, secret_key)
+        self._is_crypto    = asset_class == "crypto"
+        self._data_client: CryptoHistoricalDataClient | StockHistoricalDataClient = (
+            CryptoHistoricalDataClient(api_key, secret_key)
+            if self._is_crypto
+            else StockHistoricalDataClient(api_key, secret_key)
+        )
         # Queued from EOD scan, executed at next open
         self._queued_entries: dict[str, str] = {}   # symbol → "enter_long"|"enter_short"
         self._queued_exits: set[str]   = set()
@@ -61,8 +74,13 @@ class DonchianRunner:
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self, shutdown_event: asyncio.Event) -> None:
-        log_info("donchian_runner_started", symbols=self._symbols)
+        log_info("donchian_runner_started", symbols=self._symbols,
+                 asset_class="crypto" if self._is_crypto else "stock")
         await alerts.alert_startup(self._symbols)
+
+        if self._is_crypto:
+            await self._run_crypto(shutdown_event)
+            return
 
         while not shutdown_event.is_set():
             now      = datetime.now(tz=ET)
@@ -91,19 +109,49 @@ class DonchianRunner:
 
             await asyncio.sleep(30)
 
+    async def _run_crypto(self, shutdown_event: asyncio.Event) -> None:
+        """24/7 loop: scan once daily at ~00:05 UTC, enter immediately at market,
+        and check stops every 60 s around the clock."""
+        while not shutdown_event.is_set():
+            now     = datetime.now(tz=timezone.utc)
+            t       = now.time()
+            today_s = str(now.date())
+
+            if _CRYPTO_SCAN_START <= t <= _CRYPTO_SCAN_END and self._ran_eod_date != today_s:
+                self._ran_eod_date = today_s
+                await self._run_eod_scan()
+                # Crypto trades continuously — no "next open" wait, enter now.
+                await self._place_morning_orders()
+                await asyncio.sleep(60)
+                continue
+
+            await self._check_open_positions()
+            await asyncio.sleep(60)
+
     # ── EOD scan ─────────────────────────────────────────────────────────────
 
     async def _fetch_daily_bars(self, symbol: str, n: int = 260) -> list:
-        now   = datetime.now(tz=ET)
-        start = now - timedelta(days=n * 2)   # buffer for weekends/holidays
-        req   = StockBarsRequest(
-            symbol_or_symbols=symbol,
-            timeframe=TimeFrame(1, TimeFrameUnit.Day),
-            start=start,
-            end=now,
-            feed=DataFeed.IEX,
-        )
-        raw  = await asyncio.to_thread(self._data_client.get_stock_bars, req)
+        now = datetime.now(tz=timezone.utc if self._is_crypto else ET)
+        if self._is_crypto:
+            # Crypto trades every calendar day — no weekend/holiday buffer needed.
+            start = now - timedelta(days=n + 5)
+            req: CryptoBarsRequest | StockBarsRequest = CryptoBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                start=start,
+                end=now,
+            )
+            raw = await asyncio.to_thread(self._data_client.get_crypto_bars, req)
+        else:
+            start = now - timedelta(days=n * 2)   # buffer for weekends/holidays
+            req = StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                start=start,
+                end=now,
+                feed=DataFeed.IEX,
+            )
+            raw = await asyncio.to_thread(self._data_client.get_stock_bars, req)
         bars = list(raw[symbol]) if symbol in raw else []
         return bars[-n:] if len(bars) > n else bars
 
@@ -185,7 +233,7 @@ class DonchianRunner:
                 if not bars:
                     continue
                 price = Decimal(str(bars[-1].close))
-                qty   = self._risk.compute_qty(price)
+                qty   = self._risk.compute_qty(price, fractional=self._is_crypto)
                 if qty <= Decimal("0"):
                     log_info("donchian_entry_zero_qty", symbol=symbol)
                     continue

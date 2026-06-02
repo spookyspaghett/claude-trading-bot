@@ -4,20 +4,18 @@ import asyncio
 import signal
 import sys
 from datetime import date, datetime, time
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from alpaca.data.models import Bar
 
 import alerts
 from broker import BrokerClient, LiveTradingNotConfirmedError
-from config_loader import load_config
 from data import AggregatedBar, DataFeed
 from executor import OrderExecutor
 from logger import log_error, log_info, setup_logging
 from research import PremarketResearch
 from risk import RiskManager
-from strategy import EMAStrategy, ORBStrategy, Strategy
+from strategy import EMAStrategy, ORBStrategy, Strategy, TrendSRStrategy
 
 ET = ZoneInfo("America/New_York")
 MARKET_OPEN: time = time(9, 30)
@@ -37,11 +35,26 @@ def _build_strategy(config: object) -> tuple[Strategy, str]:
     from config_loader import Config  # local import to avoid circular
     assert isinstance(config, Config)
     name = config.strategy.name
-    if name == "ema":
+    is_crypto = config.asset_class == "crypto"
+    if name == "trend_sr":
+        strat = TrendSRStrategy(
+            config=config.strategy.trend_sr,
+            symbols=config.symbols,
+            trade_24_7=is_crypto,
+        )
+        order_type = "market"
+        log_info(
+            "strategy_selected",
+            strategy="trend_sr",
+            ma_fast=config.strategy.trend_sr.ma_fast,
+            ma_slow=config.strategy.trend_sr.ma_slow,
+        )
+    elif name == "ema":
         strat = EMAStrategy(
             config=config.strategy.ema,
             symbols=config.symbols,
             stop_loss_pct=config.risk.stop_loss_pct,
+            trade_24_7=is_crypto,
         )
         order_type = config.strategy.ema.entry_order_type
         log_info(
@@ -103,6 +116,7 @@ async def _run_donchian(config: object) -> None:
         strategy=strategy,
         api_key=config.alpaca_api_key,
         secret_key=config.alpaca_secret_key,
+        asset_class=config.asset_class,
     )
 
     shutdown_event = asyncio.Event()
@@ -117,9 +131,13 @@ async def _run_donchian(config: object) -> None:
 
 
 async def run() -> None:
-    config = load_config(Path("config.yaml"))
+    from profiles import load_active_config
+    config = load_active_config()
     setup_logging()
-    log_info("startup", symbols=config.symbols, live=config.live, mode="paper" if not config.live else "LIVE")
+    is_crypto = config.asset_class == "crypto"
+    log_info("startup", symbols=config.symbols, live=config.live,
+             asset_class=config.asset_class,
+             mode="paper" if not config.live else "LIVE")
 
     # Donchian is a separate daily-bar loop — hand off and return
     if config.strategy.name == "donchian":
@@ -148,6 +166,7 @@ async def run() -> None:
         trailing_stop_pct=float(config.risk.trailing_stop_pct),
         loser_cut_pct=config.risk.loser_cut_pct,
         enable_claude_filter=config.ai.enable_claude_filter,
+        fractional=is_crypto,
     )
 
     # Pre-market research: score each symbol before the trading loop
@@ -199,21 +218,26 @@ async def run() -> None:
 
             now = datetime.now(tz=ET)
 
-            if not _is_market_hours(now):
-                continue
+            # Stocks only trade during market hours and reset each session.
+            # Crypto trades 24/7 — no market-hours gate, no daily flatten/reset.
+            if not is_crypto:
+                if not _is_market_hours(now):
+                    continue
 
-            if not feed.connected:
-                continue
+                if not feed.connected:
+                    continue
 
-            # ── Daily reset at the start of each new trading day ──────────────
-            today = now.date()
-            if today != current_day:
-                if current_day is not None:      # not the very first bar
-                    executor.end_of_day()
-                    strategy.reset_day()
-                    risk.reset_day()
-                    log_info("new_trading_day", date=str(today))
-                current_day = today
+                # ── Daily reset at the start of each new trading day ──────────
+                today = now.date()
+                if today != current_day:
+                    if current_day is not None:      # not the very first bar
+                        executor.end_of_day()
+                        strategy.reset_day()
+                        risk.reset_day()
+                        log_info("new_trading_day", date=str(today))
+                    current_day = today
+            elif not feed.connected:
+                continue
 
             if isinstance(bar, Bar):
                 sig = strategy.on_bar(bar)
@@ -225,8 +249,12 @@ async def run() -> None:
         await alerts.alert_error("main_loop_error", str(exc))
     finally:
         log_info("shutting_down")
-        await executor.flatten_all()
-        executor.end_of_day()
+        # Stocks flatten on shutdown. Crypto positions ride untouched — their
+        # broker-side trailing stops stay live, so a restart/deploy doesn't dump
+        # open trades or remove their protection.
+        if not is_crypto:
+            await executor.flatten_all()
+            executor.end_of_day()
         feed_task.cancel()
         try:
             await feed_task
