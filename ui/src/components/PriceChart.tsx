@@ -112,26 +112,43 @@ export default function PriceChart({ slug, symbols }: Props) {
   useEffect(() => {
     const candle = candleRef.current
     if (!candle || !data) return
-    const bars = data.bars
-    candle.setData(bars.map(b => ({
-      time: b.time as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close,
-    })) as CandlestickData[])
 
-    fastRef.current?.setData(data.indicators.ma_fast > 0 ? ema(bars, data.indicators.ma_fast) : [])
-    slowRef.current?.setData(data.indicators.ma_slow > 0 ? ema(bars, data.indicators.ma_slow) : [])
+    // lightweight-charts requires data strictly ascending and unique by time.
+    // Alpaca usually returns it that way, but guard against out-of-order /
+    // duplicate bars which would otherwise make setData throw and blank the chart.
+    const seen = new Set<number>()
+    const bars = [...data.bars]
+      .sort((a, b) => a.time - b.time)
+      .filter(b => (seen.has(b.time) ? false : (seen.add(b.time), true)))
 
-    // Buy/sell markers.
-    const markers: SeriesMarker<UTCTimestamp>[] = data.markers.map(m => {
-      const buy = m.side.toLowerCase() === 'buy'
-      return {
-        time: m.time as UTCTimestamp,
-        position: buy ? 'belowBar' : 'aboveBar',
-        color: buy ? '#4ade80' : '#f87171',
-        shape: buy ? 'arrowUp' : 'arrowDown',
-        text: buy ? 'BUY' : 'SELL',
-      }
-    })
-    candle.setMarkers(markers)
+    try {
+      candle.setData(bars.map(b => ({
+        time: b.time as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close,
+      })) as CandlestickData[])
+
+      fastRef.current?.setData(data.indicators.ma_fast > 0 ? ema(bars, data.indicators.ma_fast) : [])
+      slowRef.current?.setData(data.indicators.ma_slow > 0 ? ema(bars, data.indicators.ma_slow) : [])
+
+      // Buy/sell markers — only those that land on a real bar, sorted ascending.
+      const barTimes = new Set(bars.map(b => b.time))
+      const markers: SeriesMarker<UTCTimestamp>[] = data.markers
+        .filter(m => barTimes.has(m.time))
+        .sort((a, b) => a.time - b.time)
+        .map(m => {
+          const buy = m.side.toLowerCase() === 'buy'
+          return {
+            time: m.time as UTCTimestamp,
+            position: buy ? 'belowBar' : 'aboveBar',
+            color: buy ? '#4ade80' : '#f87171',
+            shape: buy ? 'arrowUp' : 'arrowDown',
+            text: buy ? 'BUY' : 'SELL',
+          }
+        })
+      candle.setMarkers(markers)
+    } catch (e) {
+      setError(`Chart render failed: ${String(e)}`)
+      return
+    }
 
     // Support / resistance price lines.
     for (const pl of priceLinesRef.current) candle.removePriceLine(pl)
