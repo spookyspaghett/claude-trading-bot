@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -94,6 +95,7 @@ class BacktestStats:
     total_pnl: Decimal
     max_drawdown: Decimal
     sharpe_ratio: float
+    avg_hold_days: float
 
 
 @dataclass
@@ -144,6 +146,7 @@ def _run_with_bars(
     end: date,
     orb_config: OrbConfig,
     risk_config: RiskConfig,
+    starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
     """Replay the ORB strategy over 1-minute BacktestBar objects."""
 
@@ -153,7 +156,7 @@ def _run_with_bars(
         days.setdefault(d, []).append(bar)
 
     trades: list[Trade] = []
-    equity = Decimal("500000")
+    equity = starting_equity
     equity_curve: list[dict[str, object]] = []
 
     for trading_day in sorted(days.keys()):
@@ -286,6 +289,7 @@ def _run_with_daily_bars(
     volume_filter_days: int = 20,
     trailing_activation_pct: float = 2.0,
     trailing_pct: float = 8.0,
+    starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
     """N-day Donchian channel breakout on daily OHLC bars.
 
@@ -324,11 +328,15 @@ def _run_with_daily_bars(
     )
 
     trades: list[Trade] = []
-    equity = Decimal("500000")
+    equity = starting_equity
     equity_curve: list[dict[str, object]] = []
     open_trade: Trade | None = None
     current_stop_px: Decimal = Decimal("0")
     best_px: Decimal = Decimal("0")   # tracks peak (long) or trough (short) since entry
+
+    # Pending entry: signal fires on close of bar i, fills at open of bar i+1
+    pending_direction: str | None = None
+    pending_stop_dist: Decimal = Decimal("0")
 
     for i in range(warmup, len(bars)):
         risk.reset_daily_limit()
@@ -441,40 +449,53 @@ def _run_with_daily_bars(
                 current_stop_px = Decimal("0")
                 best_px         = Decimal("0")
 
-        # ── 4. Entry signal ───────────────────────────────────────────────────
-        if open_trade is None:
+        # ── 4. Execute pending entry at today's open (realistic: signal → next open) ──
+        if open_trade is None and pending_direction is not None:
             ok, _ = risk.check_new_order(symbol)
-            if ok and vol_ok:
-                if atr is not None and use_atr_stop:
-                    stop_dist = Decimal(str(atr)) * _atr_mult
-                else:
-                    stop_dist = bar_close * stop_factor
-
-                if bar_close > ch_high and trend_up and fast_up:
-                    qty = risk.compute_qty(bar_close)
+            if ok:
+                bar_open = Decimal(str(bar.open))
+                if pending_direction == "BUY":
+                    qty = risk.compute_qty(bar_open)
                     if qty > Decimal("0"):
-                        stop = (bar_close - stop_dist).quantize(Decimal("0.01"))
+                        stop = (bar_open - pending_stop_dist).quantize(Decimal("0.01"))
                         open_trade = Trade(
                             symbol=symbol, direction="BUY",
-                            entry_time=bar_et, entry_price=bar_close,
+                            entry_time=bar_et, entry_price=bar_open,
                             stop_price=stop, qty=qty,
                         )
                         current_stop_px = stop
-                        best_px         = bar_close
+                        best_px         = bar_open
                         risk.record_fill(symbol, qty, Decimal("0"))
-
-                elif bar_close < ch_low and not long_only and trend_down and fast_down:
-                    qty = risk.compute_qty(bar_close)
+                elif pending_direction == "SELL":
+                    qty = risk.compute_qty(bar_open)
                     if qty > Decimal("0"):
-                        stop = (bar_close + stop_dist).quantize(Decimal("0.01"))
+                        stop = (bar_open + pending_stop_dist).quantize(Decimal("0.01"))
                         open_trade = Trade(
                             symbol=symbol, direction="SELL",
-                            entry_time=bar_et, entry_price=bar_close,
+                            entry_time=bar_et, entry_price=bar_open,
                             stop_price=stop, qty=qty,
                         )
                         current_stop_px = stop
-                        best_px         = bar_close
+                        best_px         = bar_open
                         risk.record_fill(symbol, -qty, Decimal("0"))
+            pending_direction = None
+            pending_stop_dist = Decimal("0")
+
+        # ── 5. Generate signal from today's close → will fill at next bar's open ──
+        if open_trade is None:
+            if atr is not None and use_atr_stop:
+                stop_dist = Decimal(str(atr)) * _atr_mult
+            else:
+                stop_dist = bar_close * stop_factor
+
+            if bar_close > ch_high and trend_up and fast_up and vol_ok:
+                pending_direction = "BUY"
+                pending_stop_dist = stop_dist
+            elif bar_close < ch_low and not long_only and trend_down and fast_down and vol_ok:
+                pending_direction = "SELL"
+                pending_stop_dist = stop_dist
+            else:
+                pending_direction = None
 
         equity_curve.append({
             "timestamp": int(
@@ -553,6 +574,7 @@ def _run_sync(
     secret_key: str,
     orb_config: OrbConfig,
     risk_config: RiskConfig,
+    starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
     client  = StockHistoricalDataClient(api_key, secret_key)
     request = StockBarsRequest(
@@ -560,6 +582,7 @@ def _run_sync(
         timeframe=TimeFrame(1, TimeFrameUnit.Minute),
         start=datetime(start.year, start.month, start.day, tzinfo=timezone.utc),
         end=datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc),
+        feed=DataFeed.IEX,
     )
     raw          = client.get_stock_bars(request)
     alpaca_bars  = list(raw[symbol]) if symbol in raw else []
@@ -577,7 +600,7 @@ def _run_sync(
         for b in alpaca_bars
     ]
 
-    return _run_with_bars(symbol, bars, start, end, orb_config, risk_config)
+    return _run_with_bars(symbol, bars, start, end, orb_config, risk_config, starting_equity)
 
 
 # ── File parsing ──────────────────────────────────────────────────────────────
@@ -744,6 +767,7 @@ def _run_sync_from_bars(
     volume_filter_days: int = 20,
     trailing_activation_pct: float = 2.0,
     trailing_pct: float = 8.0,
+    starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
@@ -758,9 +782,10 @@ def _run_sync_from_bars(
             fast_ma=fast_ma, atr_period=atr_period, atr_multiplier=atr_multiplier,
             use_atr_stop=use_atr_stop, volume_filter_days=volume_filter_days,
             trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
+            starting_equity=starting_equity,
         )
     else:
-        return _run_with_bars(symbol, bars, start, end, orb_config, risk_config)
+        return _run_with_bars(symbol, bars, start, end, orb_config, risk_config, starting_equity)
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -774,7 +799,7 @@ def _compute_stats(
             total_trades=0, winning_trades=0, losing_trades=0,
             win_rate=0.0, avg_win=Decimal("0"), avg_loss=Decimal("0"),
             profit_factor=0.0, total_pnl=Decimal("0"),
-            max_drawdown=Decimal("0"), sharpe_ratio=0.0,
+            max_drawdown=Decimal("0"), sharpe_ratio=0.0, avg_hold_days=0.0,
         )
 
     wins   = [t for t in trades if t.pnl > 0]
@@ -812,6 +837,13 @@ def _compute_stats(
             except InvalidOperation:
                 pass
 
+    hold_days = [
+        (t.exit_time - t.entry_time).total_seconds() / 86400
+        for t in trades
+        if t.exit_time is not None
+    ]
+    avg_hold_days = sum(hold_days) / len(hold_days) if hold_days else 0.0
+
     return BacktestStats(
         total_trades=len(trades),
         winning_trades=len(wins),
@@ -823,6 +855,7 @@ def _compute_stats(
         total_pnl=total_pnl,
         max_drawdown=max_dd,
         sharpe_ratio=sharpe,
+        avg_hold_days=avg_hold_days,
     )
 
 
@@ -836,9 +869,11 @@ async def run_backtest(
     secret_key: str,
     orb_config: OrbConfig,
     risk_config: RiskConfig,
+    starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
     return await asyncio.to_thread(
         _run_sync, symbol, start, end, api_key, secret_key, orb_config, risk_config,
+        starting_equity,
     )
 
 
@@ -857,9 +892,11 @@ async def run_backtest_from_file(
     volume_filter_days: int = 20,
     trailing_activation_pct: float = 2.0,
     trailing_pct: float = 8.0,
+    starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
     return await asyncio.to_thread(
         _run_sync_from_bars, symbol, bars, orb_config, risk_config,
         lookback, long_only, trend_ma, fast_ma, atr_period, atr_multiplier,
         use_atr_stop, volume_filter_days, trailing_activation_pct, trailing_pct,
+        starting_equity,
     )

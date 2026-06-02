@@ -18,6 +18,7 @@ interface BacktestStats {
   total_pnl: string
   max_drawdown: string
   sharpe_ratio: number
+  avg_hold_days: number
 }
 
 interface BacktestTrade {
@@ -119,6 +120,7 @@ export default function BacktestPanel() {
   const [volumeFilterDays, setVolumeFilterDays] = useState(20)
   const [trailingActivationPct, setTrailingActivationPct] = useState(2.0)
   const [trailingPct, setTrailingPct] = useState(8.0)
+  const [startingEquity, setStartingEquity] = useState(500000)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -132,7 +134,7 @@ export default function BacktestPanel() {
       const res = await fetch('/api/backtest', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol, start_date: startDate, end_date: endDate }),
+        body: JSON.stringify({ symbol, start_date: startDate, end_date: endDate, starting_equity: startingEquity }),
       })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -163,6 +165,7 @@ export default function BacktestPanel() {
       form.append('volume_filter_days', String(volumeFilterDays))
       form.append('trailing_activation_pct', String(trailingActivationPct))
       form.append('trailing_pct', String(trailingPct))
+      form.append('starting_equity', String(startingEquity))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -178,7 +181,7 @@ export default function BacktestPanel() {
 
   // ── Derived chart data ─────────────────────────────────────────────────────
 
-  const equityStart = result?.equity_curve[0]?.equity ?? 500_000
+  const equityStart = result?.equity_curve[0]?.equity ?? startingEquity
   const equityEnd   = result?.equity_curve[result.equity_curve.length - 1]?.equity ?? equityStart
   const returnPct   = equityStart > 0 ? ((equityEnd - equityStart) / equityStart * 100) : 0
   const pnlPositive = returnPct >= 0
@@ -315,6 +318,14 @@ export default function BacktestPanel() {
                   <span className="text-sm text-slate-300 font-medium">Long only</span>
                 </label>
                 <p className="text-xs text-slate-600 mt-0.5 ml-6">No short trades</p>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Starting equity ($)</label>
+                <input type="number" min={100} step={100}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
+                  value={startingEquity}
+                  onChange={e => setStartingEquity(Math.max(100, parseFloat(e.target.value) || 500000))}
+                />
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">CSV or Excel file</label>
@@ -468,6 +479,14 @@ export default function BacktestPanel() {
                 <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
               </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Starting equity ($)</label>
+                <input type="number" min={100} step={100}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
+                  value={startingEquity}
+                  onChange={e => setStartingEquity(Math.max(100, parseFloat(e.target.value) || 500000))}
+                />
+              </div>
               <button
                 onClick={() => void runAlpaca()}
                 disabled={loading}
@@ -477,7 +496,7 @@ export default function BacktestPanel() {
                 {loading ? 'Running…' : 'Run Backtest'}
               </button>
             </div>
-            <p className="text-xs text-slate-600">Requires Alpaca SIP data. Max range: 180 days.</p>
+            <p className="text-xs text-slate-600">Requires Alpaca IEX data. Max range: 180 days.</p>
           </div>
         )}
 
@@ -507,7 +526,7 @@ export default function BacktestPanel() {
                 {result.strategy_used}
               </span>
               <span className={`text-sm font-bold tabular-nums ${pnlPositive ? 'text-green-400' : 'text-red-400'}`}>
-                {fmtPct(returnPct)} return on $500k
+                {fmtPct(returnPct)} return on {fmtUsd(startingEquity)}
               </span>
             </div>
             <button
@@ -521,11 +540,11 @@ export default function BacktestPanel() {
           </div>
 
           {/* ── Stats grid ────────────────────────────────────────────────── */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
             <StatCard
               label="Net Return"
               value={fmtPct(returnPct)}
-              sub={`${fmtUsd(result.stats.total_pnl, true)} on $500k`}
+              sub={`${fmtUsd(result.stats.total_pnl, true)} on ${fmtUsd(startingEquity)}`}
               positive={pnlPositive}
               large
             />
@@ -558,13 +577,20 @@ export default function BacktestPanel() {
               sub={`Loss: -${fmtUsd(result.stats.avg_loss)}`}
               positive={parseFloat(result.stats.avg_win) >= parseFloat(result.stats.avg_loss)}
             />
+            <StatCard
+              label="Avg Hold"
+              value={result.stats.avg_hold_days < 1
+                ? `${Math.round(result.stats.avg_hold_days * 24)}h`
+                : `${result.stats.avg_hold_days.toFixed(1)}d`}
+              sub="avg days per trade"
+            />
           </div>
 
           {/* ── Equity curve + drawdown overlay ───────────────────────────── */}
           <div className="bg-slate-900 rounded-xl border border-slate-700 p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-slate-200">Equity Curve</h3>
-              <span className="text-xs text-slate-500">Starting $500k</span>
+              <span className="text-xs text-slate-500">Starting {fmtUsd(startingEquity)}</span>
             </div>
             {result.equity_curve.length === 0 ? (
               <p className="text-slate-600 text-sm text-center py-8">No trades in this period.</p>

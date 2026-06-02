@@ -48,6 +48,7 @@ def _result_to_dict(result: Any) -> dict[str, Any]:
             "total_pnl":      str(result.stats.total_pnl.quantize(result.stats.total_pnl.__class__("0.01"))),
             "max_drawdown":   str(result.stats.max_drawdown.quantize(result.stats.max_drawdown.__class__("0.01"))),
             "sharpe_ratio":   round(result.stats.sharpe_ratio, 2),
+            "avg_hold_days":  round(result.stats.avg_hold_days, 1),
         },
         "trades": [
             {
@@ -72,11 +73,14 @@ class BacktestRequest(BaseModel):
     symbol: str
     start_date: str   # YYYY-MM-DD
     end_date: str     # YYYY-MM-DD
+    starting_equity: float = 500000.0
 
 
 @router.post("/backtest")
 async def run_backtest_endpoint(req: BacktestRequest) -> dict[str, Any]:
     try:
+        from decimal import Decimal
+
         from backtest import run_backtest
         from config_loader import load_config
 
@@ -95,6 +99,7 @@ async def run_backtest_endpoint(req: BacktestRequest) -> dict[str, Any]:
             secret_key=cfg.alpaca_secret_key,
             orb_config=cfg.strategy.orb,
             risk_config=cfg.risk,
+            starting_equity=Decimal(str(req.starting_equity)),
         )
 
         payload = _result_to_dict(result)
@@ -124,6 +129,7 @@ async def run_backtest_upload(
     volume_filter_days: int = Form(20),
     trailing_activation_pct: float = Form(2.0),
     trailing_pct: float = Form(8.0),
+    starting_equity: float = Form(500000.0),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -134,6 +140,8 @@ async def run_backtest_upload(
     • TradingView: time (Unix), open, high, low, close, volume
     """
     try:
+        from decimal import Decimal
+
         from backtest import parse_bars_from_bytes, run_backtest_from_file
         from config_loader import load_config
 
@@ -164,6 +172,7 @@ async def run_backtest_upload(
             volume_filter_days=max(0, volume_filter_days),
             trailing_activation_pct=max(0.0, trailing_activation_pct),
             trailing_pct=max(0.0, trailing_pct),
+            starting_equity=Decimal(str(max(100.0, starting_equity))),
         )
 
         payload = _result_to_dict(result)
