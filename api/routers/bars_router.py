@@ -73,20 +73,31 @@ def _fetch_bars_sync(
             "Day": TimeFrameUnit.Day}[tf_unit]
     timeframe = TimeFrame(tf_amt, unit)
     now = datetime.now(tz=timezone.utc)
-    start = now - timedelta(minutes=mins_per_bar * limit * 2 + 120)
+    # Generous window with a 1-day buffer so clock skew / quiet periods can't
+    # land us in an empty slice. We don't pass `limit` to the request (which can
+    # truncate to the oldest bars in the window) — we slice the newest below.
+    start = now - timedelta(minutes=mins_per_bar * limit * 4 + 1440)
 
     if is_crypto:
         client: Any = CryptoHistoricalDataClient(api_key, secret_key)
         req: Any = CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=timeframe,
-                                     start=start, end=now, limit=limit * 2)
+                                     start=start, end=now)
         raw = client.get_crypto_bars(req)
     else:
         client = StockHistoricalDataClient(api_key, secret_key)
         req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=timeframe,
-                               start=start, end=now, limit=limit * 2, feed=DataFeed.IEX)
+                               start=start, end=now, feed=DataFeed.IEX)
         raw = client.get_stock_bars(req)
 
-    bars = list(raw[symbol]) if symbol in raw else []
+    # BarSet access can be unreliable via `in`; read the underlying dict directly.
+    raw_data = getattr(raw, "data", None)
+    if isinstance(raw_data, dict):
+        bars = list(raw_data.get(symbol, []))
+    else:
+        try:
+            bars = list(raw[symbol])
+        except (KeyError, TypeError):
+            bars = []
     out: list[dict[str, Any]] = []
     seen: set[int] = set()
     for b in bars[-limit:]:
