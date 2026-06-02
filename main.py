@@ -181,6 +181,7 @@ async def run(slug: str | None = None) -> None:
         loser_cut_pct=config.risk.loser_cut_pct,
         enable_claude_filter=config.ai.enable_claude_filter,
         fractional=is_crypto,
+        broker_trailing_stop=not is_crypto,
     )
 
     # Pre-market research: score each symbol before the trading loop
@@ -263,9 +264,10 @@ async def run(slug: str | None = None) -> None:
         await alerts.alert_error("main_loop_error", str(exc))
     finally:
         log_info("shutting_down")
-        # Stocks flatten on shutdown. Crypto positions ride untouched — their
-        # broker-side trailing stops stay live, so a restart/deploy doesn't dump
-        # open trades or remove their protection.
+        # Stocks flatten on shutdown. Crypto positions ride untouched so a
+        # restart/deploy doesn't churn them — but note crypto exits are managed
+        # by the strategy while running (Alpaca has no broker-side crypto stop),
+        # so a stopped bot leaves crypto positions unmanaged until restarted.
         if not is_crypto:
             await executor.flatten_all()
             executor.end_of_day()

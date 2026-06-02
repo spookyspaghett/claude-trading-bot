@@ -32,11 +32,15 @@ class OrderExecutor:
         loser_cut_pct: Decimal = Decimal("7"),
         enable_claude_filter: bool = False,
         fractional: bool = False,
+        broker_trailing_stop: bool = True,
     ) -> None:
         self._broker = broker
         self._risk = risk
         self._entry_order_type = entry_order_type
         self._fractional = fractional
+        # Alpaca crypto doesn't support trailing-stop (or plain stop) orders, so
+        # crypto relies on the strategy's own exit signals instead.
+        self._broker_trailing_stop = broker_trailing_stop
         self._trailing_stop_pct = trailing_stop_pct
         self._loser_cut_threshold = loser_cut_pct / Decimal("100")
         # order_id → (Order, direction)
@@ -243,23 +247,26 @@ class OrderExecutor:
                     self._risk.record_fill(symbol=symbol, qty=qty_signed, realised_pnl=Decimal("0"))
                     del self._pending_entries[order_id]
 
-                    # Place trailing stop now that the position exists
-                    stop_side = OrderSide.SELL if direction == Direction.BUY else OrderSide.BUY
-                    try:
-                        stop_order = await self._broker.submit_trailing_stop_order(
-                            symbol=symbol,
-                            qty=fill_qty,
-                            side=stop_side,
-                            trail_percent=self._trailing_stop_pct,
-                        )
-                        self._pending_stops[str(stop_order.id)] = symbol
-                    except Exception as exc:
-                        log_error(
-                            "trailing_stop_failed",
-                            symbol=symbol,
-                            trail_pct=self._trailing_stop_pct,
-                            error=str(exc),
-                        )
+                    # Place a broker-side trailing stop (stocks only). Alpaca
+                    # rejects trailing/stop orders for crypto, which is managed
+                    # by the strategy's own exit signals instead.
+                    if self._broker_trailing_stop:
+                        stop_side = OrderSide.SELL if direction == Direction.BUY else OrderSide.BUY
+                        try:
+                            stop_order = await self._broker.submit_trailing_stop_order(
+                                symbol=symbol,
+                                qty=fill_qty,
+                                side=stop_side,
+                                trail_percent=self._trailing_stop_pct,
+                            )
+                            self._pending_stops[str(stop_order.id)] = symbol
+                        except Exception as exc:
+                            log_error(
+                                "trailing_stop_failed",
+                                symbol=symbol,
+                                trail_pct=self._trailing_stop_pct,
+                                error=str(exc),
+                            )
 
             elif status in (OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED):
                 log_rejection(
