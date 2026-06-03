@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -132,6 +132,46 @@ async def _run_donchian(config: object, kill_path: Path = Path("KILL")) -> None:
     log_info("donchian_shutdown_complete")
 
 
+async def _warm_up_crypto(strategy: Strategy, config: object) -> None:
+    """Seed the strategy's indicators from recent crypto history so it can trade
+    immediately on startup instead of waiting ~warmup_bars live candles."""
+    from alpaca.data.historical import CryptoHistoricalDataClient
+    from alpaca.data.requests import CryptoBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+    from config_loader import Config
+    assert isinstance(config, Config)
+
+    is_trend_sr = config.strategy.name == "trend_sr"
+    tf_min = config.strategy.trend_sr.bar_minutes if is_trend_sr else 1
+    need = int(getattr(strategy, "warmup_bars", 200)) + 30
+    if tf_min % 60 == 0:
+        timeframe = TimeFrame(tf_min // 60, TimeFrameUnit.Hour)
+    else:
+        timeframe = TimeFrame(tf_min, TimeFrameUnit.Minute)
+
+    client = CryptoHistoricalDataClient(config.alpaca_api_key, config.alpaca_secret_key)
+    now = datetime.now(tz=ZoneInfo("UTC"))
+    start = now - timedelta(minutes=tf_min * need * 2 + 1440)
+
+    for symbol in config.symbols:
+        try:
+            req = CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=timeframe,
+                                    start=start, end=now)
+            raw = await asyncio.to_thread(client.get_crypto_bars, req)
+            data = getattr(raw, "data", None)
+            if isinstance(data, dict):
+                bars = list(data.get(symbol, []))
+            else:
+                bars = list(raw[symbol]) if symbol in raw else []
+            if bars:
+                strategy.warm_up(symbol, bars[-need:])
+                log_info("warmup_seeded", symbol=symbol,
+                         bars=len(bars[-need:]), timeframe=f"{tf_min}m")
+        except Exception as exc:
+            log_error("warmup_failed", symbol=symbol, error=str(exc))
+
+
 async def run(slug: str | None = None) -> None:
     from config_loader import Config
     from profiles import load_active_config, load_profile
@@ -190,6 +230,11 @@ async def run(slug: str | None = None) -> None:
         symbol_research = await research.run(config.symbols)
         executor.set_research(symbol_research)
         log_info("research_complete", symbols_scored=list(symbol_research.keys()))
+
+    # Seed indicators from history so the bot can trade immediately on startup
+    # (otherwise a long regime MA needs ~warmup_bars live candles first).
+    if is_crypto:
+        await _warm_up_crypto(strategy, config)
 
     feed = DataFeed(config)
 

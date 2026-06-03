@@ -42,6 +42,13 @@ class Strategy(abc.ABC):
     @abc.abstractmethod
     def reset_day(self) -> None: ...
 
+    # Number of bars of history the strategy needs before it can trade.
+    warmup_bars: int = 0
+
+    def warm_up(self, symbol: str, bars: list[Bar | AggregatedBar]) -> None:
+        """Prime indicators from historical bars without trading. No-op by default."""
+        return
+
 
 @dataclass
 class _ORBState:
@@ -513,10 +520,23 @@ class TrendSRStrategy(Strategy):
         st.agg_high, st.agg_low, st.agg_close = high, low, close
         return sig
 
-    def _evaluate(
-        self, symbol: str, st: _TrendSRState,
-        high: Decimal, low: Decimal, close: Decimal,
-    ) -> Signal | None:
+    @property
+    def warmup_bars(self) -> int:
+        return self._warmup
+
+    def warm_up(self, symbol: str, bars: list[Bar | AggregatedBar]) -> None:
+        """Prime indicators from historical (already-timeframed) bars, no trading."""
+        st = self._state.get(symbol)
+        if st is None:
+            return
+        for b in bars:
+            self._update_indicators(
+                st, Decimal(str(b.high)), Decimal(str(b.low)), Decimal(str(b.close)),
+            )
+
+    def _update_indicators(
+        self, st: _TrendSRState, high: Decimal, low: Decimal, close: Decimal,
+    ) -> None:
         st.highs.append(high)
         st.lows.append(low)
         st.closes.append(close)
@@ -542,11 +562,18 @@ class TrendSRStrategy(Strategy):
         # Track pivots every bar (also during warmup) so early S/R isn't missed.
         self._update_pivots(st)
 
+    def _evaluate(
+        self, symbol: str, st: _TrendSRState,
+        high: Decimal, low: Decimal, close: Decimal,
+    ) -> Signal | None:
+        self._update_indicators(st, high, low, close)
+
         if len(st.closes) < self._warmup:
             return None
         if st.cooldown > 0:
             st.cooldown -= 1
 
+        one = Decimal("1")
         atr = self._atr(st)
         assert st.fast_ema is not None and st.slow_ema is not None
 
