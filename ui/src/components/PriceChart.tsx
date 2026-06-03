@@ -11,7 +11,7 @@ interface Props {
 
 interface Bar { time: number; open: number; high: number; low: number; close: number; volume: number }
 interface Marker { time: number; side: string; price: number }
-interface Indicators { strategy: string; ma_fast: number; ma_slow: number; pivot_lookback: number; pivot_strength: number }
+interface Indicators { strategy: string; ma_fast: number; ma_slow: number; regime_ma: number; pivot_lookback: number; pivot_strength: number }
 interface BarsResponse { symbol: string; timeframe: string; bars: Bar[]; markers: Marker[]; indicators: Indicators }
 
 const TIMEFRAMES = ['1Min', '5Min', '15Min', '1Hour', '1Day']
@@ -58,6 +58,7 @@ export default function PriceChart({ slug, symbols }: Props) {
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const fastRef = useRef<ISeriesApi<'Line'> | null>(null)
   const slowRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const regimeRef = useRef<ISeriesApi<'Line'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
 
   // Keep the selected symbol valid as profiles/symbols change.
@@ -102,6 +103,7 @@ export default function PriceChart({ slug, symbols }: Props) {
     })
     fastRef.current = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
     slowRef.current = chart.addLineSeries({ color: '#a78bfa', lineWidth: 1, priceLineVisible: false, lastValueVisible: false })
+    regimeRef.current = chart.addLineSeries({ color: '#f472b6', lineWidth: 2, priceLineVisible: false, lastValueVisible: false })
 
     const ro = new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth }))
     ro.observe(el)
@@ -128,6 +130,7 @@ export default function PriceChart({ slug, symbols }: Props) {
 
       fastRef.current?.setData(data.indicators.ma_fast > 0 ? ema(bars, data.indicators.ma_fast) : [])
       slowRef.current?.setData(data.indicators.ma_slow > 0 ? ema(bars, data.indicators.ma_slow) : [])
+      regimeRef.current?.setData(data.indicators.regime_ma > 0 ? ema(bars, data.indicators.regime_ma) : [])
 
       // Buy/sell markers — only those that land on a real bar, sorted ascending.
       const barTimes = new Set(bars.map(b => b.time))
@@ -191,6 +194,7 @@ export default function PriceChart({ slug, symbols }: Props) {
           <div className="flex items-center gap-3 text-[10px] text-slate-500">
             {ind.ma_fast > 0 && <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-sky-400 inline-block" />MA{ind.ma_fast}</span>}
             {ind.ma_slow > 0 && <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-violet-400 inline-block" />MA{ind.ma_slow}</span>}
+            {ind.regime_ma > 0 && <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-pink-400 inline-block" />regime MA{ind.regime_ma}</span>}
             {ind.pivot_strength > 0 && <span className="text-amber-400">R</span>}
             {ind.pivot_strength > 0 && <span className="text-cyan-400">S</span>}
           </div>

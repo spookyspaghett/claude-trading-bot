@@ -24,14 +24,19 @@ def _bar(symbol: str, high: float, low: float, close: float, i: int) -> Any:
     return b
 
 
+# Filters off + no aggregation so the core entry/exit logic is deterministic.
+def _cfg(long_only: bool = True) -> TrendSRConfig:
+    return TrendSRConfig(
+        bar_minutes=1, ma_fast=3, ma_slow=5, regime_ma=0, pivot_lookback=5,
+        pivot_strength=1, atr_period=3, atr_mult=1.5, breakout_buffer_atr=0.0,
+        cooldown_bars=0, trailing_activation_pct=2.0, trailing_pct=5.0,
+        long_only=long_only,
+    )
+
+
 @pytest.fixture()
 def strat() -> TrendSRStrategy:
-    cfg = TrendSRConfig(
-        ma_fast=3, ma_slow=5, pivot_lookback=5, pivot_strength=1,
-        atr_period=3, atr_mult=1.5, trailing_activation_pct=2.0,
-        trailing_pct=5.0, long_only=True,
-    )
-    return TrendSRStrategy(cfg, ["BTC/USD"], trade_24_7=True)
+    return TrendSRStrategy(_cfg(), ["BTC/USD"], trade_24_7=True)
 
 
 def _feed(strat: TrendSRStrategy, closes: list[float]) -> list[Any]:
@@ -82,13 +87,45 @@ def test_unknown_symbol_ignored(strat: TrendSRStrategy) -> None:
 
 
 def test_shorts_allowed_when_not_long_only() -> None:
-    cfg = TrendSRConfig(
-        ma_fast=3, ma_slow=5, pivot_lookback=5, pivot_strength=1,
-        atr_period=3, atr_mult=1.5, trailing_activation_pct=2.0,
-        trailing_pct=5.0, long_only=False,
-    )
-    s = TrendSRStrategy(cfg, ["BTC/USD"], trade_24_7=True)
+    s = TrendSRStrategy(_cfg(long_only=False), ["BTC/USD"], trade_24_7=True)
     # Downtrend with a bounce that forms a support pivot (~119), then a break below it.
     sigs = _feed(s, [130, 128, 126, 124, 122, 120, 123, 121, 119, 115, 110, 105, 101])
     # In a downtrend with shorts enabled we expect at least one SELL entry.
     assert any(sig.direction == Direction.SELL for sig in sigs)
+
+
+def test_regime_filter_blocks_buys_in_downtrend() -> None:
+    # regime_ma on → a long breakout below the regime MA must be suppressed.
+    cfg = TrendSRConfig(
+        bar_minutes=1, ma_fast=3, ma_slow=5, regime_ma=8, pivot_lookback=5,
+        pivot_strength=1, atr_period=3, atr_mult=1.5, breakout_buffer_atr=0.0,
+        cooldown_bars=0, trailing_activation_pct=2.0, trailing_pct=5.0, long_only=True,
+    )
+    s = TrendSRStrategy(cfg, ["BTC/USD"], trade_24_7=True)
+    # Overall downtrend: price stays below the regime EMA, so no BUYs even on pops.
+    sigs = _feed(s, [120, 118, 119, 116, 117, 114, 115, 112, 113, 110, 111, 108, 109, 106])
+    assert all(sig.direction != Direction.BUY for sig in sigs)
+
+
+def test_aggregation_groups_minute_bars() -> None:
+    # bar_minutes=15 → 15 one-minute bars collapse into a single evaluated candle.
+    cfg = TrendSRConfig(
+        bar_minutes=15, ma_fast=3, ma_slow=5, regime_ma=0, pivot_lookback=3,
+        pivot_strength=1, atr_period=3, atr_mult=1.5, breakout_buffer_atr=0.0,
+        cooldown_bars=0, trailing_activation_pct=2.0, trailing_pct=5.0, long_only=True,
+    )
+    s = TrendSRStrategy(cfg, ["BTC/USD"], trade_24_7=True)
+    st = s._state["BTC/USD"]
+
+    def minute_bar(i: int) -> Any:
+        b = MagicMock()
+        b.symbol = "BTC/USD"; b.open = 100; b.high = 100 + i; b.low = 100; b.close = 100 + i
+        b.volume = 1_000
+        b.timestamp = _T0 + timedelta(minutes=i)
+        return b
+
+    # Feed 30 one-minute bars = buckets [0..14] and [15..29]. The first 15m candle
+    # finalizes when minute 15 arrives; the second is still open.
+    for i in range(30):
+        s.on_bar(minute_bar(i))
+    assert len(st.closes) == 1  # exactly one finalized 15m candle evaluated

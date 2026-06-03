@@ -19,8 +19,10 @@ const DEFAULT: Config = {
     ema: { fast_period: 9, slow_period: 21, entry_order_type: 'market', eod_exit_time: '15:50' },
     donchian: { lookback_days: 40, trend_ma: 200, trailing_activation_pct: 1.0, trailing_pct: 8.0, long_only: true },
     trend_sr: {
-      ma_fast: 21, ma_slow: 55, pivot_lookback: 20, pivot_strength: 3,
-      atr_period: 14, atr_mult: 2.0, trailing_activation_pct: 3.0, trailing_pct: 8.0, long_only: true,
+      bar_minutes: 15, ma_fast: 21, ma_slow: 55, regime_ma: 200,
+      pivot_lookback: 20, pivot_strength: 3, atr_period: 14, atr_mult: 2.0,
+      breakout_buffer_atr: 0.25, cooldown_bars: 4,
+      trailing_activation_pct: 3.0, trailing_pct: 8.0, long_only: true,
     },
   },
 }
@@ -415,6 +417,22 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
+                    <Label tip="Timeframe the strategy trades on. The live 1-minute feed is aggregated into candles of this many minutes (e.g. 15). Higher = less noise, fewer/cleaner trades. This is the single biggest lever against whipsaw.">
+                      Timeframe (minutes)
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.bar_minutes} min={1} max={1440}
+                      onChange={v => setTsr('bar_minutes', v)} />
+                    <p className="text-[10px] text-slate-600 mt-0.5">15 = 15-minute candles (recommended)</p>
+                  </div>
+                  <div>
+                    <Label tip="Long-term regime filter: only take longs when price is above this MA (and below it for shorts). Set to 200 to avoid buying in downtrends — the bot stays flat instead. 0 disables it.">
+                      Regime MA <span className="text-slate-600">(0 = off)</span>
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.regime_ma} min={0} max={1000}
+                      onChange={v => setTsr('regime_ma', v)} />
+                    <p className="text-[10px] text-slate-600 mt-0.5">200 = only trade with the trend</p>
+                  </div>
+                  <div>
                     <Label tip="Fast moving-average period. Must be smaller than the slow MA. The fast>slow relationship defines the uptrend filter that gates long entries.">
                       Fast MA
                     </Label>
@@ -455,6 +473,20 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.atr_mult} step={0.1} min={0.1} max={20}
                       onChange={v => setTsr('atr_mult', v)} />
+                  </div>
+                  <div>
+                    <Label tip="The close must clear resistance by this fraction of ATR before entering, so marginal pokes above a level don't trigger a trade. 0.25 = a quarter-ATR buffer.">
+                      Breakout buffer (×ATR)
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.breakout_buffer_atr} step={0.05} min={0} max={5}
+                      onChange={v => setTsr('breakout_buffer_atr', v)} />
+                  </div>
+                  <div>
+                    <Label tip="After an exit, wait this many candles before re-entering the same symbol. Prevents instant re-buy churn on a chopping level. In 15m candles, 4 = one hour.">
+                      Re-entry cooldown (bars)
+                    </Label>
+                    <NumInput value={cfg.strategy.trend_sr.cooldown_bars} step={1} min={0} max={100}
+                      onChange={v => setTsr('cooldown_bars', v)} />
                   </div>
                   <div>
                     <Label tip="Once the trade is up this %, the trailing stop activates and follows the peak.">

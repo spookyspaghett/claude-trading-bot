@@ -361,12 +361,19 @@ class _TrendSRState:
     closes: list[Decimal] = field(default_factory=list)
     fast_ema: Decimal | None = None
     slow_ema: Decimal | None = None
+    regime_ema: Decimal | None = None
     resistance: Decimal | None = None
     support: Decimal | None = None
     position: str = ""                  # "" | "BUY" | "SELL"
     entry_price: Decimal = field(default_factory=lambda: Decimal("0"))
     stop_price: Decimal = field(default_factory=lambda: Decimal("0"))
     best_px: Decimal = field(default_factory=lambda: Decimal("0"))
+    cooldown: int = 0                   # bars left to wait after an exit
+    # Live aggregation of the raw feed into `bar_minutes` candles.
+    bucket: int | None = None
+    agg_high: Decimal = field(default_factory=lambda: Decimal("0"))
+    agg_low: Decimal = field(default_factory=lambda: Decimal("0"))
+    agg_close: Decimal = field(default_factory=lambda: Decimal("0"))
 
 
 class TrendSRStrategy(Strategy):
@@ -374,12 +381,17 @@ class TrendSRStrategy(Strategy):
 
     Designed for 24/7 crypto but works on any bar series.
 
-    Entry (long): close breaks above the latest confirmed resistance (swing high)
-      while the fast MA is above the slow MA (uptrend regime).
+    The raw feed is aggregated into ``bar_minutes`` candles so the strategy runs
+    on a sane timeframe (e.g. 15m) instead of noisy 1-minute bars.
+
+    Entry (long): close breaks above the latest resistance by an ATR buffer while
+      the fast MA is above the slow MA AND price is above the long-term regime MA
+      (so it stays flat in downtrends instead of buying every pop). A cooldown
+      after each exit prevents instant re-entry churn.
     Stop: ``max(latest support, entry − ATR × atr_mult)``.
     Exit: trailing stop (after ``trailing_activation_pct`` gain it trails
       ``trailing_pct`` below the peak), or close below the slow MA, or close below
-      the latest support. Short side mirrors this and is enabled only when
+      the latest support. Shorts mirror this and are enabled only when
       ``long_only`` is False (never for crypto, which can't short on Alpaca).
     """
 
@@ -389,20 +401,27 @@ class TrendSRStrategy(Strategy):
         symbols: list[str],
         trade_24_7: bool = False,
     ) -> None:
+        self._bar_minutes = max(1, config.bar_minutes)
         self._ma_fast = config.ma_fast
         self._ma_slow = config.ma_slow
+        self._regime_ma = config.regime_ma
         self._fast_k = Decimal("2") / (Decimal(str(config.ma_fast)) + 1)
         self._slow_k = Decimal("2") / (Decimal(str(config.ma_slow)) + 1)
+        self._regime_k = (Decimal("2") / (Decimal(str(config.regime_ma)) + 1)
+                          if config.regime_ma > 0 else Decimal("0"))
         self._pivot_lookback = config.pivot_lookback
         self._pivot_strength = config.pivot_strength
         self._atr_period = config.atr_period
         self._atr_mult = Decimal(str(config.atr_mult))
+        self._buffer_atr = Decimal(str(config.breakout_buffer_atr))
+        self._cooldown_bars = config.cooldown_bars
         self._trail_act = Decimal(str(config.trailing_activation_pct)) / Decimal("100")
         self._trail_pct = Decimal(str(config.trailing_pct)) / Decimal("100")
         self._long_only = config.long_only
         self._trade_24_7 = trade_24_7
         self._warmup = max(
             self._ma_slow,
+            self._regime_ma,
             self._pivot_lookback + 2 * self._pivot_strength + 1,
             self._atr_period + 1,
         )
@@ -415,6 +434,13 @@ class TrendSRStrategy(Strategy):
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=ZoneInfo("UTC"))
         return ts.astimezone(ET)
+
+    @staticmethod
+    def _utc_seconds(bar: Bar | AggregatedBar) -> int:
+        ts = bar.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+        return int(ts.timestamp())
 
     def _atr(self, st: _TrendSRState) -> Decimal | None:
         n = len(st.closes)
@@ -446,6 +472,8 @@ class TrendSRStrategy(Strategy):
             st.support = st.lows[idx]
 
     def on_bar(self, bar: Bar | AggregatedBar) -> Signal | None:
+        # We aggregate raw feed bars ourselves, so ignore the feed's own
+        # AggregatedBar to avoid double-counting.
         if isinstance(bar, AggregatedBar):
             return None
 
@@ -463,6 +491,32 @@ class TrendSRStrategy(Strategy):
         low = Decimal(str(bar.low))
         close = Decimal(str(bar.close))
 
+        # No aggregation: evaluate every bar directly.
+        if self._bar_minutes <= 1:
+            return self._evaluate(symbol, st, high, low, close)
+
+        # Aggregate into bar_minutes candles by UTC timestamp bucket. Evaluate a
+        # candle only once it completes (when a bar from a later bucket arrives).
+        bucket = self._utc_seconds(bar) // (self._bar_minutes * 60)
+        if st.bucket is None:
+            st.bucket = bucket
+            st.agg_high, st.agg_low, st.agg_close = high, low, close
+            return None
+        if bucket == st.bucket:
+            st.agg_high = max(st.agg_high, high)
+            st.agg_low = min(st.agg_low, low)
+            st.agg_close = close
+            return None
+        # Rollover: finalize the completed candle, then open a new one.
+        sig = self._evaluate(symbol, st, st.agg_high, st.agg_low, st.agg_close)
+        st.bucket = bucket
+        st.agg_high, st.agg_low, st.agg_close = high, low, close
+        return sig
+
+    def _evaluate(
+        self, symbol: str, st: _TrendSRState,
+        high: Decimal, low: Decimal, close: Decimal,
+    ) -> Signal | None:
         st.highs.append(high)
         st.lows.append(low)
         st.closes.append(close)
@@ -471,22 +525,27 @@ class TrendSRStrategy(Strategy):
             st.lows = st.lows[-self._maxlen:]
             st.closes = st.closes[-self._maxlen:]
 
-        # Update EMAs
+        one = Decimal("1")
         if st.fast_ema is None or st.slow_ema is None:
             st.fast_ema = close
             st.slow_ema = close
+            st.regime_ema = close
         else:
-            one = Decimal("1")
             fe: Decimal = st.fast_ema
             se: Decimal = st.slow_ema
             st.fast_ema = close * self._fast_k + fe * (one - self._fast_k)
             st.slow_ema = close * self._slow_k + se * (one - self._slow_k)
+            if self._regime_k > 0 and st.regime_ema is not None:
+                re: Decimal = st.regime_ema
+                st.regime_ema = close * self._regime_k + re * (one - self._regime_k)
 
         # Track pivots every bar (also during warmup) so early S/R isn't missed.
         self._update_pivots(st)
 
         if len(st.closes) < self._warmup:
             return None
+        if st.cooldown > 0:
+            st.cooldown -= 1
 
         atr = self._atr(st)
         assert st.fast_ema is not None and st.slow_ema is not None
@@ -497,7 +556,7 @@ class TrendSRStrategy(Strategy):
             entry = st.entry_price
             gain = (close - entry) / entry if entry else Decimal("0")
             if gain >= self._trail_act and self._trail_pct > 0:
-                trail = st.best_px * (Decimal("1") - self._trail_pct)
+                trail = st.best_px * (one - self._trail_pct)
                 st.stop_price = max(st.stop_price, trail)
             exit_now = (
                 low <= st.stop_price
@@ -506,6 +565,7 @@ class TrendSRStrategy(Strategy):
             )
             if exit_now:
                 st.position = ""
+                st.cooldown = self._cooldown_bars
                 return Signal(symbol=symbol, direction=Direction.FLAT,
                               entry_price=close, stop_price=Decimal("0"),
                               reason="Trend/SR exit (stop, MA or support break)")
@@ -516,7 +576,7 @@ class TrendSRStrategy(Strategy):
             entry = st.entry_price
             gain = (entry - close) / entry if entry else Decimal("0")
             if gain >= self._trail_act and self._trail_pct > 0:
-                trail = st.best_px * (Decimal("1") + self._trail_pct)
+                trail = st.best_px * (one + self._trail_pct)
                 st.stop_price = min(st.stop_price, trail)
             exit_now = (
                 high >= st.stop_price
@@ -525,18 +585,24 @@ class TrendSRStrategy(Strategy):
             )
             if exit_now:
                 st.position = ""
+                st.cooldown = self._cooldown_bars
                 return Signal(symbol=symbol, direction=Direction.FLAT,
                               entry_price=close, stop_price=Decimal("0"),
                               reason="Trend/SR exit (stop, MA or resistance break)")
             return None
 
         # ── Look for an entry ─────────────────────────────────────────────────
-        if atr is None:
+        if atr is None or st.cooldown > 0:
             return None
         stop_dist = atr * self._atr_mult
+        buffer = atr * self._buffer_atr
+        regime_on = self._regime_ma > 0 and st.regime_ema is not None
+        regime = st.regime_ema if regime_on else None
 
         uptrend = st.fast_ema > st.slow_ema
-        if st.resistance is not None and close > st.resistance and uptrend:
+        regime_up = regime is None or close > regime
+        if (st.resistance is not None and close > st.resistance + buffer
+                and uptrend and regime_up):
             floor = st.support if st.support is not None else (close - stop_dist)
             st.stop_price = max(floor, close - stop_dist)
             st.entry_price = close
@@ -545,10 +611,12 @@ class TrendSRStrategy(Strategy):
             return Signal(symbol=symbol, direction=Direction.BUY,
                           entry_price=close, stop_price=st.stop_price,
                           reason=(f"Trend/SR breakout above {st.resistance} "
-                                  f"(MA{self._ma_fast}>{self._ma_slow})"))
+                                  f"(MA{self._ma_fast}>{self._ma_slow}, regime up)"))
 
+        regime_dn = regime is None or close < regime
         if (not self._long_only and st.support is not None
-                and close < st.support and st.fast_ema < st.slow_ema):
+                and close < st.support - buffer
+                and st.fast_ema < st.slow_ema and regime_dn):
             ceil_ = st.resistance if st.resistance is not None else (close + stop_dist)
             st.stop_price = min(ceil_, close + stop_dist)
             st.entry_price = close
@@ -557,7 +625,7 @@ class TrendSRStrategy(Strategy):
             return Signal(symbol=symbol, direction=Direction.SELL,
                           entry_price=close, stop_price=st.stop_price,
                           reason=(f"Trend/SR breakdown below {st.support} "
-                                  f"(MA{self._ma_fast}<{self._ma_slow})"))
+                                  f"(MA{self._ma_fast}<{self._ma_slow}, regime down)"))
 
         return None
 

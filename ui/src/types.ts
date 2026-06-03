@@ -83,12 +83,16 @@ export interface ConfigDonchian {
 }
 
 export interface ConfigTrendSR {
+  bar_minutes: number
   ma_fast: number
   ma_slow: number
+  regime_ma: number
   pivot_lookback: number
   pivot_strength: number
   atr_period: number
   atr_mult: number
+  breakout_buffer_atr: number
+  cooldown_bars: number
   trailing_activation_pct: number
   trailing_pct: number
   long_only: boolean

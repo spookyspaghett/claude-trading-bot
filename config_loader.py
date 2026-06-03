@@ -73,12 +73,20 @@ class DonchianConfig(BaseModel):
 
 class TrendSRConfig(BaseModel):
     """Trend + Support/Resistance breakout (crypto-oriented, also works on stocks)."""
+    # bar_minutes: aggregate the live feed into candles of this timeframe.
+    bar_minutes: int = Field(ge=1, le=1440, default=15)
     ma_fast: int = Field(ge=2, le=400, default=21)
     ma_slow: int = Field(ge=3, le=800, default=55)
+    # regime_ma: only go long above this long-term MA (0 = off).
+    regime_ma: int = Field(ge=0, le=1000, default=200)
     pivot_lookback: int = Field(ge=2, le=200, default=20)
     pivot_strength: int = Field(ge=1, le=20, default=3)
     atr_period: int = Field(ge=2, le=100, default=14)
     atr_mult: float = Field(ge=0.1, le=20.0, default=2.0)
+    # breakout_buffer_atr: close must clear resistance by this × ATR to enter.
+    breakout_buffer_atr: float = Field(ge=0.0, le=5.0, default=0.25)
+    # cooldown_bars: wait N bars after an exit before re-entering.
+    cooldown_bars: int = Field(ge=0, le=100, default=4)
     trailing_activation_pct: float = Field(ge=0.0, le=50.0, default=3.0)
     trailing_pct: float = Field(ge=0.0, le=50.0, default=8.0)
     long_only: bool = True

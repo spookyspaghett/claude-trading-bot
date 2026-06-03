@@ -45,15 +45,17 @@ def _indicator_meta(cfg: Any) -> dict[str, Any]:
     if name == "trend_sr":
         t = strat.trend_sr
         return {"strategy": name, "ma_fast": t.ma_fast, "ma_slow": t.ma_slow,
+                "regime_ma": t.regime_ma,
                 "pivot_lookback": t.pivot_lookback, "pivot_strength": t.pivot_strength}
     if name == "ema":
         return {"strategy": name, "ma_fast": strat.ema.fast_period,
-                "ma_slow": strat.ema.slow_period,
+                "ma_slow": strat.ema.slow_period, "regime_ma": 0,
                 "pivot_lookback": 0, "pivot_strength": 0}
     if name == "donchian":
         return {"strategy": name, "ma_fast": 0, "ma_slow": strat.donchian.trend_ma,
+                "regime_ma": 0,
                 "pivot_lookback": strat.donchian.lookback_days, "pivot_strength": 0}
-    return {"strategy": name, "ma_fast": 0, "ma_slow": 0,
+    return {"strategy": name, "ma_fast": 0, "ma_slow": 0, "regime_ma": 0,
             "pivot_lookback": 0, "pivot_strength": 0}
 
 

@@ -565,8 +565,10 @@ def _run_with_trend_sr(
     from strategy import Direction, TrendSRStrategy
 
     bars = sorted(bars, key=lambda b: b.timestamp)
+    # bar_minutes=1 → evaluate each uploaded bar directly (the file already has the
+    # timeframe being tested). regime_ma defaults on so backtests match live.
     cfg = TrendSRConfig(
-        ma_fast=ma_fast, ma_slow=ma_slow,
+        bar_minutes=1, ma_fast=ma_fast, ma_slow=ma_slow,
         pivot_lookback=pivot_lookback, pivot_strength=pivot_strength,
         atr_period=atr_period, atr_mult=atr_mult,
         trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
