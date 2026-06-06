@@ -23,6 +23,7 @@ const DEFAULT: Config = {
       pivot_lookback: 20, pivot_strength: 3, atr_period: 14, atr_mult: 2.0,
       breakout_buffer_atr: 0.25, cooldown_bars: 4,
       trailing_activation_pct: 3.0, trailing_pct: 8.0, long_only: true,
+      min_adx: 0, adx_period: 14, volume_mult: 0, volume_ma: 20,
     },
   },
 }
@@ -514,6 +515,43 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     Long only (no short selling)
                     <Tip text="Crypto cannot be shorted on Alpaca, so keep this ON for crypto profiles. On stocks you may turn it off to allow shorts on breakdowns below support." />
                   </label>
+                </div>
+
+                {/* ── Optional entry filters ─────────────────────────────── */}
+                <div className="pt-3 mt-1 border-t border-slate-700/60">
+                  <p className="text-xs font-semibold text-slate-300 mb-2">
+                    Entry filters <span className="text-slate-500 font-normal">(optional — 0 = off · backtest before enabling)</span>
+                  </p>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                    <div>
+                      <Label tip="Require Wilder's ADX ≥ this before taking a breakout. ADX measures trend STRENGTH (0–100): below ~20 the market is choppy. Skips breakouts with no real trend behind them, so a rejected breakout is dropped entirely (not just delayed). 0 = off. 20–25 typical.">
+                        Min ADX
+                      </Label>
+                      <NumInput value={cfg.strategy.trend_sr.min_adx} step={1} min={0} max={100}
+                        onChange={v => setTsr('min_adx', v)} />
+                    </div>
+                    <div>
+                      <Label tip="Smoothing window for the ADX calculation. Standard is 14. Only matters when Min ADX > 0.">
+                        ADX period
+                      </Label>
+                      <NumInput value={cfg.strategy.trend_sr.adx_period} step={1} min={2} max={100}
+                        onChange={v => setTsr('adx_period', v)} />
+                    </div>
+                    <div>
+                      <Label tip="Require the breakout bar's volume to be ≥ this multiple of the recent average volume. Filters out low-conviction breakouts. 0 = off. 1.2–1.5 typical. Note: Alpaca crypto volume is single-venue (partial), so it's noisier for crypto than for stocks.">
+                        Volume × (min)
+                      </Label>
+                      <NumInput value={cfg.strategy.trend_sr.volume_mult} step={0.1} min={0} max={10}
+                        onChange={v => setTsr('volume_mult', v)} />
+                    </div>
+                    <div>
+                      <Label tip="How many bars to average for the volume filter's baseline. Default 20. Only matters when Volume × > 0.">
+                        Volume avg (bars)
+                      </Label>
+                      <NumInput value={cfg.strategy.trend_sr.volume_ma} step={1} min={2} max={500}
+                        onChange={v => setTsr('volume_ma', v)} />
+                    </div>
+                  </div>
                 </div>
               </div>
             )}

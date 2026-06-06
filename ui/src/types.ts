@@ -96,6 +96,10 @@ export interface ConfigTrendSR {
   trailing_activation_pct: number
   trailing_pct: number
   long_only: boolean
+  min_adx: number
+  adx_period: number
+  volume_mult: number
+  volume_ma: number
 }
 
 export type AssetClass = 'stock' | 'crypto'
