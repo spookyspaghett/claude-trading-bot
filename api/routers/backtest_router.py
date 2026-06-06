@@ -135,6 +135,10 @@ async def run_backtest_upload(
     ma_slow: int = Form(55),
     pivot_lookback: int = Form(20),
     pivot_strength: int = Form(3),
+    min_adx: float = Form(0.0),
+    adx_period: int = Form(14),
+    volume_mult: float = Form(0.0),
+    volume_ma: int = Form(20),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -183,6 +187,10 @@ async def run_backtest_upload(
             ma_slow=max(3, ma_slow),
             pivot_lookback=max(2, pivot_lookback),
             pivot_strength=max(1, pivot_strength),
+            min_adx=max(0.0, min_adx),
+            adx_period=max(2, adx_period),
+            volume_mult=max(0.0, volume_mult),
+            volume_ma=max(2, volume_ma),
         )
 
         payload = _result_to_dict(result)

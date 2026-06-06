@@ -35,6 +35,29 @@ strategy:
     entry_order_type: market     # "limit" or "market"  (market recommended for EMA)
     eod_exit_time: "15:50"       # Flatten all positions at this time ET
 
+  # Trend + Support/Resistance breakout (set strategy.name: trend_sr to use).
+  # Works on stocks and crypto. Tune & validate with the Backtest panel first.
+  # See docs/trend_sr_filters.md for a full explanation of every field.
+  trend_sr:
+    bar_minutes: 15              # Aggregate the live feed into 15-minute candles
+    ma_fast: 21                  # Fast trend MA
+    ma_slow: 55                  # Slow trend MA (must be > ma_fast)
+    regime_ma: 200              # Only go long above this long-term MA (0 = off)
+    pivot_lookback: 20           # Bars scanned for swing pivots (support/resistance)
+    pivot_strength: 3            # Bars on each side required to confirm a pivot
+    atr_period: 14               # ATR window for stop distance
+    atr_mult: 2.0                # Stop = entry − ATR × this
+    breakout_buffer_atr: 0.25    # Close must clear the level by this × ATR to enter
+    cooldown_bars: 4             # Bars to wait after an exit before re-entering
+    trailing_activation_pct: 3.0 # Start trailing once up this %
+    trailing_pct: 8.0            # Trail this % below the peak
+    long_only: true              # No shorts (required for crypto)
+    # ── Optional entry filters (0 = OFF; backtest before enabling live) ──────
+    min_adx: 0.0                 # Require ADX ≥ this (skip weak trends; 20-25 typical)
+    adx_period: 14               # ADX smoothing window
+    volume_mult: 0.0             # Require breakout volume ≥ this × average (1.2-1.5 typical)
+    volume_ma: 20                # Average-volume lookback for the volume filter
+
   donchian:
     lookback_days: 40            # N-day channel: buy breakout above N-day high
     trend_ma: 200                # Only trade in direction of N-day MA (0 = off)

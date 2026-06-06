@@ -87,6 +87,17 @@ class TrendSRConfig(BaseModel):
     breakout_buffer_atr: float = Field(ge=0.0, le=5.0, default=0.25)
     # cooldown_bars: wait N bars after an exit before re-entering.
     cooldown_bars: int = Field(ge=0, le=100, default=4)
+    # ── ADX trend-strength gate ──────────────────────────────────────────────
+    # min_adx: skip breakouts when ADX is below this (0 = disabled; 20-25 typical).
+    # Filters out breakouts that fire in choppy, directionless markets.
+    adx_period: int = Field(ge=2, le=100, default=14)
+    min_adx: float = Field(ge=0.0, le=100.0, default=0.0)
+    # ── Volume confirmation ──────────────────────────────────────────────────
+    # volume_mult: breakout bar volume must be ≥ this × the average volume over
+    # volume_ma bars (0 = disabled; 1.2-1.5 typical). Filters out low-conviction
+    # breakouts. Silently passes when the data feed has no volume.
+    volume_ma: int = Field(ge=2, le=500, default=20)
+    volume_mult: float = Field(ge=0.0, le=10.0, default=0.0)
     trailing_activation_pct: float = Field(ge=0.0, le=50.0, default=3.0)
     trailing_pct: float = Field(ge=0.0, le=50.0, default=8.0)
     long_only: bool = True

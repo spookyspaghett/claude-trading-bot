@@ -126,6 +126,8 @@ export default function BacktestPanel() {
   const [maSlow, setMaSlow] = useState(55)
   const [pivotLookback, setPivotLookback] = useState(20)
   const [pivotStrength, setPivotStrength] = useState(3)
+  const [minAdx, setMinAdx] = useState(0)
+  const [volumeMult, setVolumeMult] = useState(0)
   const [showAdvanced, setShowAdvanced] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -176,6 +178,8 @@ export default function BacktestPanel() {
       form.append('ma_slow', String(maSlow))
       form.append('pivot_lookback', String(pivotLookback))
       form.append('pivot_strength', String(pivotStrength))
+      form.append('min_adx', String(minAdx))
+      form.append('volume_mult', String(volumeMult))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -324,6 +328,24 @@ export default function BacktestPanel() {
                     <input type="number" min={1} step={1} value={pivotStrength}
                       onChange={e => setPivotStrength(Math.max(1, parseInt(e.target.value) || 3))}
                       className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Min ADX <span className="text-slate-600">(0 = off)</span>
+                    </label>
+                    <input type="number" min={0} max={100} step={1} value={minAdx}
+                      onChange={e => setMinAdx(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+                    <p className="text-[10px] text-slate-600 mt-0.5">skip weak trends (20-25)</p>
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Volume × <span className="text-slate-600">(0 = off)</span>
+                    </label>
+                    <input type="number" min={0} max={10} step={0.1} value={volumeMult}
+                      onChange={e => setVolumeMult(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+                    <p className="text-[10px] text-slate-600 mt-0.5">vol ≥ N× avg (1.2-1.5)</p>
                   </div>
                 </>
               )}

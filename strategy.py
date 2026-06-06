@@ -366,6 +366,7 @@ class _TrendSRState:
     highs: list[Decimal] = field(default_factory=list)
     lows: list[Decimal] = field(default_factory=list)
     closes: list[Decimal] = field(default_factory=list)
+    vols: list[Decimal] = field(default_factory=list)
     fast_ema: Decimal | None = None
     slow_ema: Decimal | None = None
     regime_ema: Decimal | None = None
@@ -376,11 +377,16 @@ class _TrendSRState:
     stop_price: Decimal = field(default_factory=lambda: Decimal("0"))
     best_px: Decimal = field(default_factory=lambda: Decimal("0"))
     cooldown: int = 0                   # bars left to wait after an exit
+    # Fresh-breakout tracking (used only when an entry filter is active) so a
+    # filtered-out breakout is skipped, not merely deferred to a later bar.
+    was_above_res: bool = False
+    was_below_sup: bool = False
     # Live aggregation of the raw feed into `bar_minutes` candles.
     bucket: int | None = None
     agg_high: Decimal = field(default_factory=lambda: Decimal("0"))
     agg_low: Decimal = field(default_factory=lambda: Decimal("0"))
     agg_close: Decimal = field(default_factory=lambda: Decimal("0"))
+    agg_volume: Decimal = field(default_factory=lambda: Decimal("0"))
 
 
 class TrendSRStrategy(Strategy):
@@ -400,6 +406,21 @@ class TrendSRStrategy(Strategy):
       ``trailing_pct`` below the peak), or close below the slow MA, or close below
       the latest support. Shorts mirror this and are enabled only when
       ``long_only`` is False (never for crypto, which can't short on Alpaca).
+
+    Optional entry filters (both default OFF — see docs/trend_sr_filters.md):
+      • ADX gate (``min_adx`` > 0): require Wilder's ADX ≥ ``min_adx`` so the
+        strategy only trades breakouts when a real trend is present, skipping
+        chop. ``adx_period`` sets the smoothing window (default 14).
+      • Volume confirmation (``volume_mult`` > 0): require the breakout bar's
+        volume ≥ ``volume_mult`` × the average volume over ``volume_ma`` bars,
+        so low-conviction breakouts are skipped. Silently passes when the data
+        feed has no volume.
+
+    Fresh-breakout entries: whenever a filter is active, entries fire ONLY on the
+    bar where price first crosses the level (not on every subsequent bar it stays
+    beyond it). This makes a rejected filter SKIP the trade instead of merely
+    delaying it to a later, worse-priced bar. With both filters off, the legacy
+    "enter on any bar beyond the level" behaviour is preserved unchanged.
     """
 
     def __init__(
@@ -426,11 +447,18 @@ class TrendSRStrategy(Strategy):
         self._trail_pct = Decimal(str(config.trailing_pct)) / Decimal("100")
         self._long_only = config.long_only
         self._trade_24_7 = trade_24_7
+        # ── Optional entry filters (0 = disabled) ─────────────────────────────
+        self._adx_period = config.adx_period
+        self._min_adx = Decimal(str(config.min_adx))
+        self._volume_ma = config.volume_ma
+        self._volume_mult = Decimal(str(config.volume_mult))
         self._warmup = max(
             self._ma_slow,
             self._regime_ma,
             self._pivot_lookback + 2 * self._pivot_strength + 1,
             self._atr_period + 1,
+            (2 * self._adx_period + 1) if self._min_adx > 0 else 0,
+            (self._volume_ma + 1) if self._volume_mult > 0 else 0,
         )
         self._maxlen = self._warmup + self._pivot_lookback + 5
         self._state: dict[str, _TrendSRState] = {s: _TrendSRState() for s in symbols}
@@ -462,6 +490,75 @@ class TrendSRStrategy(Strategy):
             )
             trs.append(tr)
         return sum(trs, Decimal("0")) / Decimal(str(len(trs)))
+
+    def _adx(self, st: _TrendSRState) -> Decimal | None:
+        """Wilder's Average Directional Index over the rolling window.
+
+        Returns None until enough bars exist. Measures trend *strength* (not
+        direction): low ADX ⇒ choppy/range-bound, high ADX ⇒ strong trend.
+        """
+        p = self._adx_period
+        n = len(st.closes)
+        if n < 2 * p + 1:
+            return None
+
+        start = n - (2 * p + 1)
+        trs: list[Decimal] = []
+        plus_dm: list[Decimal] = []
+        minus_dm: list[Decimal] = []
+        zero = Decimal("0")
+        for i in range(start + 1, n):
+            up = st.highs[i] - st.highs[i - 1]
+            down = st.lows[i - 1] - st.lows[i]
+            plus_dm.append(up if (up > down and up > zero) else zero)
+            minus_dm.append(down if (down > up and down > zero) else zero)
+            trs.append(max(
+                st.highs[i] - st.lows[i],
+                abs(st.highs[i] - st.closes[i - 1]),
+                abs(st.lows[i] - st.closes[i - 1]),
+            ))
+        if len(trs) < p:
+            return None
+
+        def _wilder(vals: list[Decimal]) -> list[Decimal]:
+            acc = sum(vals[:p], zero)
+            out = [acc]
+            pd = Decimal(str(p))
+            for v in vals[p:]:
+                acc = acc - (acc / pd) + v
+                out.append(acc)
+            return out
+
+        s_tr = _wilder(trs)
+        s_pdm = _wilder(plus_dm)
+        s_mdm = _wilder(minus_dm)
+        hundred = Decimal("100")
+        dxs: list[Decimal] = []
+        for tr_s, pdm_s, mdm_s in zip(s_tr, s_pdm, s_mdm):
+            if tr_s == 0:
+                continue
+            pdi = hundred * pdm_s / tr_s
+            mdi = hundred * mdm_s / tr_s
+            denom = pdi + mdi
+            dxs.append(zero if denom == 0 else hundred * abs(pdi - mdi) / denom)
+        if not dxs:
+            return None
+        recent = dxs[-p:]
+        return sum(recent, zero) / Decimal(str(len(recent)))
+
+    def _avg_volume(self, st: _TrendSRState) -> Decimal | None:
+        """Average volume of the `volume_ma` bars *before* the current bar.
+
+        Returns None when there isn't enough history or the data has no volume
+        (so the volume gate becomes a no-op rather than blocking every trade).
+        """
+        p = self._volume_ma
+        if len(st.vols) < p + 1:
+            return None
+        window = [v for v in st.vols[-p - 1:-1] if v > 0]
+        if not window:
+            return None
+        return sum(window, Decimal("0")) / Decimal(str(len(window)))
 
     def _update_pivots(self, st: _TrendSRState) -> None:
         """Confirm a pivot `pivot_strength` bars back and update S/R levels."""
@@ -497,10 +594,11 @@ class TrendSRStrategy(Strategy):
         high = Decimal(str(bar.high))
         low = Decimal(str(bar.low))
         close = Decimal(str(bar.close))
+        vol = Decimal(str(getattr(bar, "volume", 0) or 0))
 
         # No aggregation: evaluate every bar directly.
         if self._bar_minutes <= 1:
-            return self._evaluate(symbol, st, high, low, close)
+            return self._evaluate(symbol, st, high, low, close, vol)
 
         # Aggregate into bar_minutes candles by UTC timestamp bucket. Evaluate a
         # candle only once it completes (when a bar from a later bucket arrives).
@@ -508,16 +606,19 @@ class TrendSRStrategy(Strategy):
         if st.bucket is None:
             st.bucket = bucket
             st.agg_high, st.agg_low, st.agg_close = high, low, close
+            st.agg_volume = vol
             return None
         if bucket == st.bucket:
             st.agg_high = max(st.agg_high, high)
             st.agg_low = min(st.agg_low, low)
             st.agg_close = close
+            st.agg_volume += vol
             return None
         # Rollover: finalize the completed candle, then open a new one.
-        sig = self._evaluate(symbol, st, st.agg_high, st.agg_low, st.agg_close)
+        sig = self._evaluate(symbol, st, st.agg_high, st.agg_low, st.agg_close, st.agg_volume)
         st.bucket = bucket
         st.agg_high, st.agg_low, st.agg_close = high, low, close
+        st.agg_volume = vol
         return sig
 
     @property
@@ -532,18 +633,22 @@ class TrendSRStrategy(Strategy):
         for b in bars:
             self._update_indicators(
                 st, Decimal(str(b.high)), Decimal(str(b.low)), Decimal(str(b.close)),
+                Decimal(str(getattr(b, "volume", 0) or 0)),
             )
 
     def _update_indicators(
         self, st: _TrendSRState, high: Decimal, low: Decimal, close: Decimal,
+        volume: Decimal = Decimal("0"),
     ) -> None:
         st.highs.append(high)
         st.lows.append(low)
         st.closes.append(close)
+        st.vols.append(volume)
         if len(st.highs) > self._maxlen:
             st.highs = st.highs[-self._maxlen:]
             st.lows = st.lows[-self._maxlen:]
             st.closes = st.closes[-self._maxlen:]
+            st.vols = st.vols[-self._maxlen:]
 
         one = Decimal("1")
         if st.fast_ema is None or st.slow_ema is None:
@@ -564,9 +669,9 @@ class TrendSRStrategy(Strategy):
 
     def _evaluate(
         self, symbol: str, st: _TrendSRState,
-        high: Decimal, low: Decimal, close: Decimal,
+        high: Decimal, low: Decimal, close: Decimal, volume: Decimal = Decimal("0"),
     ) -> Signal | None:
-        self._update_indicators(st, high, low, close)
+        self._update_indicators(st, high, low, close, volume)
 
         if len(st.closes) < self._warmup:
             return None
@@ -576,6 +681,21 @@ class TrendSRStrategy(Strategy):
         one = Decimal("1")
         atr = self._atr(st)
         assert st.fast_ema is not None and st.slow_ema is not None
+
+        # ── Fresh-breakout tracking (only matters when a filter is active) ────
+        # Update every bar — including while in a position — so that after an
+        # exit we don't instantly re-enter a still-extended breakout; we wait
+        # for price to drop back and cross the level again.
+        filters_active = self._min_adx > 0 or self._volume_mult > 0
+        fresh_long = fresh_short = True   # filters off ⇒ legacy behaviour
+        if filters_active and atr is not None:
+            buf = atr * self._buffer_atr
+            above_res = st.resistance is not None and close > st.resistance + buf
+            below_sup = st.support is not None and close < st.support - buf
+            fresh_long = above_res and not st.was_above_res
+            fresh_short = below_sup and not st.was_below_sup
+            st.was_above_res = above_res
+            st.was_below_sup = below_sup
 
         # ── Manage an open position ───────────────────────────────────────────
         if st.position == "BUY":
@@ -621,6 +741,20 @@ class TrendSRStrategy(Strategy):
         # ── Look for an entry ─────────────────────────────────────────────────
         if atr is None or st.cooldown > 0:
             return None
+
+        # Optional entry filters (shared by long & short; both default off).
+        # ADX gate: only trade breakouts when the trend is strong enough.
+        if self._min_adx > 0:
+            adx = self._adx(st)
+            if adx is None or adx < self._min_adx:
+                return None
+        # Volume gate: breakout bar volume must beat recent average. When the
+        # data has no volume, _avg_volume returns None and the gate is skipped.
+        if self._volume_mult > 0:
+            avg_vol = self._avg_volume(st)
+            if avg_vol is not None and volume < self._volume_mult * avg_vol:
+                return None
+
         stop_dist = atr * self._atr_mult
         buffer = atr * self._buffer_atr
         regime_on = self._regime_ma > 0 and st.regime_ema is not None
@@ -629,7 +763,7 @@ class TrendSRStrategy(Strategy):
         uptrend = st.fast_ema > st.slow_ema
         regime_up = regime is None or close > regime
         if (st.resistance is not None and close > st.resistance + buffer
-                and uptrend and regime_up):
+                and uptrend and regime_up and fresh_long):
             floor = st.support if st.support is not None else (close - stop_dist)
             st.stop_price = max(floor, close - stop_dist)
             st.entry_price = close
@@ -643,7 +777,7 @@ class TrendSRStrategy(Strategy):
         regime_dn = regime is None or close < regime
         if (not self._long_only and st.support is not None
                 and close < st.support - buffer
-                and st.fast_ema < st.slow_ema and regime_dn):
+                and st.fast_ema < st.slow_ema and regime_dn and fresh_short):
             ceil_ = st.resistance if st.resistance is not None else (close + stop_dist)
             st.stop_price = min(ceil_, close + stop_dist)
             st.entry_price = close

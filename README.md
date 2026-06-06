@@ -2,6 +2,15 @@
 
 Alpaca paper-trading scaffold implementing a 15-minute Opening-Range Breakout (ORB) strategy on US equities.  **Paper mode only by default.**
 
+It also includes additional strategies (EMA crossover, daily Donchian breakout,
+and a Trend + Support/Resistance breakout), multi-account profiles, crypto
+support, and a backtesting dashboard.
+
+### Strategy docs
+
+- [Trend/SR entry filters — ADX & volume confirmation](docs/trend_sr_filters.md)
+  — optional, backtestable filters that trade fewer, higher-quality breakouts.
+
 ---
 
 ## Prerequisites

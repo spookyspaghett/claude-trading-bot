@@ -554,6 +554,10 @@ def _run_with_trend_sr(
     trailing_activation_pct: float = 3.0,
     trailing_pct: float = 8.0,
     long_only: bool = True,
+    min_adx: float = 0.0,
+    adx_period: int = 14,
+    volume_mult: float = 0.0,
+    volume_ma: int = 20,
     starting_equity: Decimal = Decimal("500000"),
 ) -> BacktestResult:
     """Replay the Trend + Support/Resistance strategy over OHLC bars.
@@ -573,6 +577,8 @@ def _run_with_trend_sr(
         atr_period=atr_period, atr_mult=atr_mult,
         trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
         long_only=long_only,
+        min_adx=min_adx, adx_period=adx_period,
+        volume_mult=volume_mult, volume_ma=volume_ma,
     )
     strat = TrendSRStrategy(cfg, [symbol], trade_24_7=True)
     risk = RiskManager(
@@ -638,10 +644,15 @@ def _run_with_trend_sr(
         trades.append(open_trade)
 
     trail_desc = f"{trailing_activation_pct:.0f}%->{trailing_pct:.0f}%"
+    extra = ""
+    if min_adx > 0:
+        extra += f", ADX≥{min_adx:.0f}"
+    if volume_mult > 0:
+        extra += f", vol≥{volume_mult:.1f}×{volume_ma}"
     name = (f"Trend/SR (MA {ma_fast}/{ma_slow}, "
             f"pivot {pivot_lookback}/{pivot_strength}, "
             f"ATR({atr_period})x{atr_mult}, trail {trail_desc}"
-            f"{', long only' if long_only else ''})")
+            f"{extra}{', long only' if long_only else ''})")
     return BacktestResult(
         symbol=symbol, start_date=str(start), end_date=str(end),
         trades=trades, equity_curve=equity_curve,
@@ -900,6 +911,10 @@ def _run_sync_from_bars(
     ma_slow: int = 55,
     pivot_lookback: int = 20,
     pivot_strength: int = 3,
+    min_adx: float = 0.0,
+    adx_period: int = 14,
+    volume_mult: float = 0.0,
+    volume_ma: int = 20,
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
@@ -914,7 +929,10 @@ def _run_sync_from_bars(
             pivot_lookback=pivot_lookback, pivot_strength=pivot_strength,
             atr_period=atr_period, atr_mult=atr_multiplier,
             trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
-            long_only=long_only, starting_equity=starting_equity,
+            long_only=long_only,
+            min_adx=min_adx, adx_period=adx_period,
+            volume_mult=volume_mult, volume_ma=volume_ma,
+            starting_equity=starting_equity,
         )
 
     if _is_daily_data(bars):
@@ -1040,10 +1058,15 @@ async def run_backtest_from_file(
     ma_slow: int = 55,
     pivot_lookback: int = 20,
     pivot_strength: int = 3,
+    min_adx: float = 0.0,
+    adx_period: int = 14,
+    volume_mult: float = 0.0,
+    volume_ma: int = 20,
 ) -> BacktestResult:
     return await asyncio.to_thread(
         _run_sync_from_bars, symbol, bars, orb_config, risk_config,
         lookback, long_only, trend_ma, fast_ma, atr_period, atr_multiplier,
         use_atr_stop, volume_filter_days, trailing_activation_pct, trailing_pct,
         starting_equity, strategy, ma_fast, ma_slow, pivot_lookback, pivot_strength,
+        min_adx, adx_period, volume_mult, volume_ma,
     )
