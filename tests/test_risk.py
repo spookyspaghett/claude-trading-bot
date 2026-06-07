@@ -212,3 +212,34 @@ def test_reset_day_does_not_clear_kill_switch(tmp_path: Path) -> None:
     rm.poll_kill_switch()
     rm.reset_day()
     assert rm.should_flatten_all is True
+
+
+# ── #9: risk-manager gaps ───────────────────────────────────────────────────────
+
+def test_pending_entries_count_toward_open_limit() -> None:
+    rm = RiskManager(max_position_usd=Decimal("5000"), stop_loss_pct=Decimal("1"),
+                     daily_loss_limit_usd=Decimal("500"), max_open_positions=2)
+    rm.register_pending("AAPL")
+    rm.register_pending("MSFT")
+    # Two pending (unfilled) entries already fill the limit of 2.
+    ok, reason = rm.check_new_order("NVDA")
+    assert not ok and "max open positions" in reason
+
+
+def test_aggregate_exposure_capped_to_equity() -> None:
+    rm = RiskManager(max_position_usd=Decimal("5000"), stop_loss_pct=Decimal("1"),
+                     daily_loss_limit_usd=Decimal("500"), max_open_positions=10)
+    rm.set_account_equity(Decimal("8000"))   # only room for one 5k position
+    rm.register_pending("AAPL")
+    ok, reason = rm.check_new_order("MSFT")   # 2 × 5k = 10k > 8k
+    assert not ok and "exposure" in reason
+
+
+def test_unrealized_drawdown_trips_daily_limit() -> None:
+    rm = RiskManager(max_position_usd=Decimal("5000"), stop_loss_pct=Decimal("1"),
+                     daily_loss_limit_usd=Decimal("500"), max_open_positions=4)
+    assert rm.should_flatten_all is False
+    rm.set_unrealized(Decimal("-600"))        # deep unrealized loss, no realized yet
+    assert rm.should_flatten_all is True
+    ok, _ = rm.check_new_order("AAPL")
+    assert not ok

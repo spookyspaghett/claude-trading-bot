@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+from dataclasses import dataclass
 from decimal import Decimal
 from uuid import UUID
 
@@ -20,6 +20,25 @@ from strategy import Direction, Signal
 _log: structlog.stdlib.BoundLogger = structlog.get_logger()  # type: ignore[assignment]
 
 
+@dataclass
+class _PendingEntry:
+    """An entry order awaiting fill, with the protective stop to place on fill."""
+    order: Order
+    direction: Direction
+    qty: Decimal
+    stop_price: Decimal
+
+
+@dataclass
+class _OpenPos:
+    """A filled position with a live broker stop that trails the peak price."""
+    direction: Direction
+    qty: Decimal
+    stop_order_id: str
+    stop_price: Decimal
+    peak: Decimal          # best price seen since entry (high for long, low for short)
+
+
 class OrderExecutor:
     """Converts strategy signals into broker orders after risk + AI checks."""
 
@@ -32,21 +51,24 @@ class OrderExecutor:
         loser_cut_pct: Decimal = Decimal("7"),
         enable_claude_filter: bool = False,
         fractional: bool = False,
-        broker_trailing_stop: bool = True,
+        place_broker_stop: bool = True,
     ) -> None:
         self._broker = broker
         self._risk = risk
         self._entry_order_type = entry_order_type
         self._fractional = fractional
-        # Alpaca crypto doesn't support trailing-stop (or plain stop) orders, so
-        # crypto relies on the strategy's own exit signals instead.
-        self._broker_trailing_stop = broker_trailing_stop
+        # Stocks get a real broker-side protective stop at the configured
+        # stop_loss price. Alpaca rejects stop orders for crypto, so crypto
+        # relies on the strategy's own exit signals instead.
+        self._place_broker_stop = place_broker_stop
         self._trailing_stop_pct = trailing_stop_pct
+        self._trail = Decimal(str(trailing_stop_pct)) / Decimal("100")
         self._loser_cut_threshold = loser_cut_pct / Decimal("100")
-        # order_id → (Order, direction)
-        self._pending_entries: dict[str, tuple[Order, Direction]] = {}
+        self._pending_entries: dict[str, _PendingEntry] = {}
         # stop_order_id → symbol
         self._pending_stops: dict[str, str] = {}
+        # symbol → live position whose broker stop trails the peak price
+        self._open: dict[str, _OpenPos] = {}
         # symbol → (fill_price, direction)
         self._cost_basis: dict[str, tuple[Decimal, Direction]] = {}
         self._journal = TradeJournal()
@@ -147,8 +169,13 @@ class OrderExecutor:
             price=str(signal.entry_price),
             order_type=self._entry_order_type,
         )
-        # Store qty so _poll_entries can place the trailing stop after fill
-        self._pending_entries[order_id] = (order, signal.direction, qty)
+        # Store the protective stop price so _poll_entries can place it on fill.
+        self._pending_entries[order_id] = _PendingEntry(
+            order=order, direction=signal.direction, qty=qty,
+            stop_price=signal.stop_price,
+        )
+        # Count this toward the open limit until it fills/cancels (#9).
+        self._risk.register_pending(signal.symbol)
 
     async def flatten_all(self) -> None:
         """Cancel all open orders and market-close all positions."""
@@ -158,6 +185,7 @@ class OrderExecutor:
             self._pending_entries.clear()
             self._pending_stops.clear()
             self._cost_basis.clear()
+            self._open.clear()
         except Exception as exc:
             log_error("flatten_all_failed", error=str(exc))
 
@@ -166,22 +194,84 @@ class OrderExecutor:
         await self._poll_entries()
         await self._poll_stops()
 
+    async def _raise_stop(
+        self, symbol: str, op: _OpenPos, new_stop: Decimal, stop_side: OrderSide,
+    ) -> None:
+        """Cancel the live stop and re-place it at a tighter (trailed) price."""
+        try:
+            await self._broker.cancel_order(op.stop_order_id)
+            self._pending_stops.pop(op.stop_order_id, None)
+            order = await self._broker.submit_stop_order(
+                symbol=symbol, qty=op.qty, side=stop_side, stop_price=new_stop,
+            )
+            op.stop_order_id = str(order.id)
+            op.stop_price = new_stop
+            self._pending_stops[op.stop_order_id] = symbol
+            _log.info("trail_raised", symbol=symbol, new_stop=str(new_stop))
+        except Exception as exc:
+            log_error("trail_raise_failed", symbol=symbol, error=str(exc))
+
+    async def _update_trailing_stop(self, symbol: str, current_price: Decimal) -> None:
+        op = self._open.get(symbol)
+        if op is None or not self._place_broker_stop:
+            return
+        if self._trail <= 0 or current_price <= 0:
+            return
+        one = Decimal("1")
+        if op.direction == Direction.BUY:
+            op.peak = max(op.peak, current_price)
+            candidate = (op.peak * (one - self._trail)).quantize(Decimal("0.01"))
+            if candidate > op.stop_price:
+                await self._raise_stop(symbol, op, candidate, OrderSide.SELL)
+        else:
+            op.peak = min(op.peak, current_price)
+            candidate = (op.peak * (one + self._trail)).quantize(Decimal("0.01"))
+            if candidate < op.stop_price:
+                await self._raise_stop(symbol, op, candidate, OrderSide.BUY)
+
     async def poll_positions(self) -> None:
-        """Close any open position whose unrealized loss exceeds the cut threshold."""
+        """Trail each open position's stop up toward its peak, and hard-cut any
+        position whose unrealized loss exceeds the cut threshold."""
         try:
             positions = await self._broker.get_all_positions()
         except Exception as exc:
             log_error("poll_positions_failed", error=str(exc))
             return
+
+        # Feed equity + total unrealized PnL to the risk manager so the daily
+        # loss limit trips on deep drawdown and exposure is capped to equity (#9).
+        total_unrealized = sum(
+            (Decimal(str(p.unrealized_pl or "0")) for p in positions), Decimal("0")
+        )
+        self._risk.set_unrealized(total_unrealized)
+        try:
+            acct = await self._broker.get_account()
+            self._risk.set_account_equity(Decimal(str(acct.equity or "0")))
+        except Exception:
+            pass
+
         for pos in positions:
+            symbol = str(pos.symbol)
+            cur_price = Decimal(str(pos.current_price or "0"))
+            await self._update_trailing_stop(symbol, cur_price)
             try:
                 plpc = Decimal(str(pos.unrealized_plpc or "0"))
             except Exception:
                 continue
+            # Only manage positions the bot itself opened (#12).
+            if symbol not in self._cost_basis:
+                continue
             if plpc <= -self._loser_cut_threshold:
-                symbol = str(pos.symbol)
                 _log.info("loser_cut", symbol=symbol, unrealized_plpc=str(plpc))
                 try:
+                    # Cancel the dangling protective stop before closing.
+                    op = self._open.get(symbol)
+                    if op is not None:
+                        try:
+                            await self._broker.cancel_order(op.stop_order_id)
+                        except Exception:
+                            pass
+                        self._pending_stops.pop(op.stop_order_id, None)
                     await self._broker.close_position(symbol)
                     pnl = Decimal(str(pos.unrealized_pl or "0"))
                     qty = abs(Decimal(str(pos.qty or "0")))
@@ -197,6 +287,7 @@ class OrderExecutor:
                     pos_qty = Decimal(str(pos.qty or "0"))
                     self._risk.record_fill(symbol=symbol, qty=-pos_qty, realised_pnl=pnl)
                     self._cost_basis.pop(symbol, None)
+                    self._open.pop(symbol, None)
                 except Exception as exc:
                     log_error("loser_cut_failed", symbol=symbol, error=str(exc))
 
@@ -231,7 +322,9 @@ class OrderExecutor:
                     price=filled_price_str,
                 )
                 if status == OrderStatus.FILLED:
-                    _, direction, entry_qty = self._pending_entries[order_id]
+                    pending = self._pending_entries[order_id]
+                    direction = pending.direction
+                    stop_price = pending.stop_price
                     symbol = str(order.symbol)
                     fill_price = Decimal(filled_price_str)
                     fill_qty = Decimal(filled_qty_str)
@@ -245,26 +338,35 @@ class OrderExecutor:
                     )
                     qty_signed = fill_qty if order.side == OrderSide.BUY else -fill_qty
                     self._risk.record_fill(symbol=symbol, qty=qty_signed, realised_pnl=Decimal("0"))
+                    self._risk.clear_pending(symbol)
                     del self._pending_entries[order_id]
 
-                    # Place a broker-side trailing stop (stocks only). Alpaca
-                    # rejects trailing/stop orders for crypto, which is managed
-                    # by the strategy's own exit signals instead.
-                    if self._broker_trailing_stop:
+                    # Place the configured protective stop as a real broker order
+                    # (stocks only). Crypto can't use broker stops on Alpaca, so it
+                    # relies on the strategy's own exit signals instead.
+                    if self._place_broker_stop and stop_price > 0:
                         stop_side = OrderSide.SELL if direction == Direction.BUY else OrderSide.BUY
                         try:
-                            stop_order = await self._broker.submit_trailing_stop_order(
+                            stop_order = await self._broker.submit_stop_order(
                                 symbol=symbol,
                                 qty=fill_qty,
                                 side=stop_side,
-                                trail_percent=self._trailing_stop_pct,
+                                stop_price=stop_price,
                             )
-                            self._pending_stops[str(stop_order.id)] = symbol
+                            stop_id = str(stop_order.id)
+                            self._pending_stops[stop_id] = symbol
+                            # Track for trailing: the stop will ratchet up toward
+                            # the peak price on each poll_positions cycle.
+                            self._open[symbol] = _OpenPos(
+                                direction=direction, qty=fill_qty,
+                                stop_order_id=stop_id, stop_price=stop_price,
+                                peak=fill_price,
+                            )
                         except Exception as exc:
                             log_error(
-                                "trailing_stop_failed",
+                                "protective_stop_failed",
                                 symbol=symbol,
-                                trail_pct=self._trailing_stop_pct,
+                                stop=str(stop_price),
                                 error=str(exc),
                             )
 
@@ -274,6 +376,7 @@ class OrderExecutor:
                     symbol=str(order.symbol),
                     reason=str(status.value),
                 )
+                self._risk.clear_pending(str(order.symbol))
                 del self._pending_entries[order_id]
 
     async def _poll_stops(self) -> None:
@@ -317,11 +420,12 @@ class OrderExecutor:
                         qty=filled_qty,
                         price=filled_price,
                         realized_pnl=pnl,
-                        reason="trailing stop triggered",
+                        reason="protective stop triggered",
                     )
                     qty_signed = filled_qty if order.side == OrderSide.BUY else -filled_qty
                     self._risk.record_fill(symbol=symbol, qty=qty_signed, realised_pnl=pnl)
                     del self._pending_stops[order_id]
+                    self._open.pop(symbol, None)
 
             elif status in (OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED):
                 del self._pending_stops[order_id]

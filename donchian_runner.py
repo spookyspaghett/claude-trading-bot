@@ -73,10 +73,23 @@ class DonchianRunner:
 
     # ── main loop ─────────────────────────────────────────────────────────────
 
+    def _rederive_queues(self) -> None:
+        """Rebuild the in-memory entry/exit queues from persisted state so a
+        restart can't strand a position or lose a queued action (#5)."""
+        for sym in self._strategy.positions_pending_exit():
+            self._queued_exits.add(sym)
+        for sym in self._strategy.positions_pending_entry():
+            direction = self._strategy.direction_of(sym)
+            self._queued_entries[sym] = "enter_long" if direction == "BUY" else "enter_short"
+        if self._queued_entries or self._queued_exits:
+            log_info("donchian_queues_rederived",
+                     entries=list(self._queued_entries), exits=list(self._queued_exits))
+
     async def run(self, shutdown_event: asyncio.Event) -> None:
         log_info("donchian_runner_started", symbols=self._symbols,
                  asset_class="crypto" if self._is_crypto else "stock")
         await alerts.alert_startup(self._symbols)
+        self._rederive_queues()
 
         if self._is_crypto:
             await self._run_crypto(shutdown_event)
@@ -221,6 +234,7 @@ class DonchianRunner:
         self._queued_exits.clear()
 
         # Entry orders
+        entered: list[str] = []
         for symbol, action in list(self._queued_entries.items()):
             try:
                 ok, reason = self._risk.check_new_order(symbol)
@@ -243,6 +257,7 @@ class DonchianRunner:
                 self._strategy.record_fill(symbol, float(qty))
                 signed_qty = qty if side == OrderSide.BUY else -qty
                 self._risk.record_fill(symbol, signed_qty, Decimal("0"))
+                entered.append(symbol)
 
                 log_info("donchian_entry_placed",
                          symbol=symbol, side=side.value, qty=str(qty))
@@ -256,6 +271,25 @@ class DonchianRunner:
             except Exception as exc:
                 log_error("donchian_entry_failed", symbol=symbol, error=str(exc))
         self._queued_entries.clear()
+        await self._reanchor_stops(entered)
+
+    async def _reanchor_stops(self, symbols: list[str]) -> None:
+        """Re-anchor each entry's stop to its actual fill price (#4). Market
+        orders fill ~immediately, so the live position's avg_entry_price is the
+        true fill we anchor the stop distance off of."""
+        if not symbols:
+            return
+        try:
+            live = {str(p.symbol): p for p in await self._broker.get_all_positions()}
+        except Exception as exc:
+            log_error("donchian_reanchor_failed", error=str(exc))
+            return
+        for sym in symbols:
+            p = live.get(sym)
+            fill = float(getattr(p, "avg_entry_price", 0) or 0) if p is not None else 0.0
+            if fill > 0:
+                self._strategy.reanchor(sym, fill)
+                log_info("donchian_stop_reanchored", symbol=sym, fill=fill)
 
     # ── intraday stop check ───────────────────────────────────────────────────
 

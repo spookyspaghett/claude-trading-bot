@@ -121,7 +121,9 @@ export default function BacktestPanel() {
   const [trailingActivationPct, setTrailingActivationPct] = useState(2.0)
   const [trailingPct, setTrailingPct] = useState(8.0)
   const [startingEquity, setStartingEquity] = useState(500000)
-  const [strategy, setStrategy] = useState<'auto' | 'trend_sr'>('auto')
+  const [strategy, setStrategy] = useState<'auto' | 'trend_sr' | 'ema'>('auto')
+  const [slippageBps, setSlippageBps] = useState(0)
+  const [commission, setCommission] = useState(0)
   const [maFast, setMaFast] = useState(21)
   const [maSlow, setMaSlow] = useState(55)
   const [pivotLookback, setPivotLookback] = useState(20)
@@ -174,6 +176,8 @@ export default function BacktestPanel() {
       form.append('trailing_pct', String(trailingPct))
       form.append('starting_equity', String(startingEquity))
       form.append('strategy', strategy)
+      form.append('slippage_bps', String(slippageBps))
+      form.append('commission', String(commission))
       form.append('ma_fast', String(maFast))
       form.append('ma_slow', String(maSlow))
       form.append('pivot_lookback', String(pivotLookback))
@@ -297,13 +301,26 @@ export default function BacktestPanel() {
             <div className="flex flex-wrap gap-3 items-end">
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Strategy</label>
-                <select value={strategy} onChange={e => setStrategy(e.target.value as 'auto' | 'trend_sr')}
+                <select value={strategy} onChange={e => setStrategy(e.target.value as 'auto' | 'trend_sr' | 'ema')}
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
                   <option value="auto">Auto (Donchian / ORB)</option>
                   <option value="trend_sr">Trend/SR (crypto)</option>
+                  <option value="ema">EMA crossover</option>
                 </select>
               </div>
-              {strategy === 'trend_sr' && (
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Slippage (bps)</label>
+                <input type="number" min={0} step={1} value={slippageBps}
+                  onChange={e => setSlippageBps(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Commission ($/fill)</label>
+                <input type="number" min={0} step={0.1} value={commission}
+                  onChange={e => setCommission(Math.max(0, parseFloat(e.target.value) || 0))}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-28 focus:outline-none focus:border-blue-500" />
+              </div>
+              {(strategy === 'trend_sr' || strategy === 'ema') && (
                 <>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">Fast MA</label>

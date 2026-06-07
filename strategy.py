@@ -188,6 +188,7 @@ class _EMAState:
     position: str = ""                   # "" | "BUY" | "SELL"
     pending_entry: str = ""              # entry to fire next bar after a reversal flat
     eod_sent: bool = False
+    count: int = 0                       # bars processed (for the warmup gate)
 
 
 class EMAStrategy(Strategy):
@@ -216,6 +217,9 @@ class EMAStrategy(Strategy):
         self._slow_period = config.slow_period
         self._stop_loss_pct = stop_loss_pct
         self._trade_24_7 = trade_24_7
+        # Need ~slow_period bars before the EMAs are meaningful (#8): don't trade
+        # until warmed, so a cross can't fire on noise on the 2nd bar.
+        self._warmup = config.slow_period
         self._state: dict[str, _EMAState] = {s: _EMAState() for s in symbols}
         eod_h, eod_m = config.eod_exit_time.split(":")
         self._eod_time: time = time(int(eod_h), int(eod_m))
@@ -226,6 +230,31 @@ class EMAStrategy(Strategy):
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=ZoneInfo("UTC"))
         return ts.astimezone(ET)
+
+    @property
+    def warmup_bars(self) -> int:
+        return self._warmup
+
+    def _step_ema(self, state: _EMAState, close: Decimal) -> bool | None:
+        """Update the EMAs and bar count; return fast>slow, or None when seeding."""
+        state.count += 1
+        if state.fast_ema is None or state.slow_ema is None:
+            state.fast_ema = close
+            state.slow_ema = close
+            state.fast_was_above = state.fast_ema > state.slow_ema
+            return None
+        one = Decimal("1")
+        state.fast_ema = close * self._fast_k + state.fast_ema * (one - self._fast_k)
+        state.slow_ema = close * self._slow_k + state.slow_ema * (one - self._slow_k)
+        return state.fast_ema > state.slow_ema
+
+    def warm_up(self, symbol: str, bars: list[Bar | AggregatedBar]) -> None:
+        """Prime the EMAs from history without trading (#8)."""
+        state = self._state.get(symbol)
+        if state is None:
+            return
+        for b in bars:
+            self._step_ema(state, Decimal(str(b.close)))
 
     def on_bar(self, bar: Bar | AggregatedBar) -> Signal | None:
         if isinstance(bar, AggregatedBar):
@@ -258,18 +287,12 @@ class EMAStrategy(Strategy):
             return None
 
         # ── Update EMAs ───────────────────────────────────────────────────────
-        if state.fast_ema is None:
-            state.fast_ema      = close
-            state.slow_ema      = close
-            state.fast_was_above = (state.fast_ema > state.slow_ema)
-            return None
+        fast_above = self._step_ema(state, close)
+        if fast_above is None:
+            return None   # just seeded
 
-        state.fast_ema = close * self._fast_k + state.fast_ema * (Decimal("1") - self._fast_k)
-        state.slow_ema = close * self._slow_k + state.slow_ema * (Decimal("1") - self._slow_k)
-
-        fast_above = state.fast_ema > state.slow_ema
-
-        if state.fast_was_above is None:
+        # Warmup gate: don't trade until the EMAs have enough history (#8).
+        if state.count < self._warmup:
             state.fast_was_above = fast_above
             return None
 
@@ -600,6 +623,23 @@ class TrendSRStrategy(Strategy):
         if self._bar_minutes <= 1:
             return self._evaluate(symbol, st, high, low, close, vol)
 
+        # Intrabar stop check (#6): when aggregating (e.g. 15m candles), still
+        # check the open position's stop against EVERY raw 1m bar so an adverse
+        # spike inside a forming candle exits at the stop instead of waiting for
+        # candle close. Fills at the stop price.
+        if st.position == "BUY" and low <= st.stop_price:
+            st.position = ""
+            st.cooldown = self._cooldown_bars
+            return Signal(symbol=symbol, direction=Direction.FLAT,
+                          entry_price=st.stop_price, stop_price=Decimal("0"),
+                          reason="Trend/SR exit (intrabar stop)")
+        if st.position == "SELL" and high >= st.stop_price:
+            st.position = ""
+            st.cooldown = self._cooldown_bars
+            return Signal(symbol=symbol, direction=Direction.FLAT,
+                          entry_price=st.stop_price, stop_price=Decimal("0"),
+                          reason="Trend/SR exit (intrabar stop)")
+
         # Aggregate into bar_minutes candles by UTC timestamp bucket. Evaluate a
         # candle only once it completes (when a bar from a later bucket arrives).
         bucket = self._utc_seconds(bar) // (self._bar_minutes * 60)
@@ -698,6 +738,8 @@ class TrendSRStrategy(Strategy):
             st.was_below_sup = below_sup
 
         # ── Manage an open position ───────────────────────────────────────────
+        # Stop hits fill at the stop price; MA/support exits fill at the close —
+        # so live (intrabar stop) and backtest price the same exit (#6).
         if st.position == "BUY":
             st.best_px = max(st.best_px, high)
             entry = st.entry_price
@@ -705,17 +747,17 @@ class TrendSRStrategy(Strategy):
             if gain >= self._trail_act and self._trail_pct > 0:
                 trail = st.best_px * (one - self._trail_pct)
                 st.stop_price = max(st.stop_price, trail)
-            exit_now = (
-                low <= st.stop_price
-                or close < st.slow_ema
-                or (st.support is not None and close < st.support)
-            )
-            if exit_now:
+            exit_px, reason = None, ""
+            if low <= st.stop_price:
+                exit_px, reason = st.stop_price, "stop"
+            elif close < st.slow_ema or (st.support is not None and close < st.support):
+                exit_px, reason = close, "MA/support break"
+            if exit_px is not None:
                 st.position = ""
                 st.cooldown = self._cooldown_bars
                 return Signal(symbol=symbol, direction=Direction.FLAT,
-                              entry_price=close, stop_price=Decimal("0"),
-                              reason="Trend/SR exit (stop, MA or support break)")
+                              entry_price=exit_px, stop_price=Decimal("0"),
+                              reason=f"Trend/SR exit ({reason})")
             return None
 
         if st.position == "SELL":
@@ -725,17 +767,17 @@ class TrendSRStrategy(Strategy):
             if gain >= self._trail_act and self._trail_pct > 0:
                 trail = st.best_px * (one + self._trail_pct)
                 st.stop_price = min(st.stop_price, trail)
-            exit_now = (
-                high >= st.stop_price
-                or close > st.slow_ema
-                or (st.resistance is not None and close > st.resistance)
-            )
-            if exit_now:
+            exit_px, reason = None, ""
+            if high >= st.stop_price:
+                exit_px, reason = st.stop_price, "stop"
+            elif close > st.slow_ema or (st.resistance is not None and close > st.resistance):
+                exit_px, reason = close, "MA/resistance break"
+            if exit_px is not None:
                 st.position = ""
                 st.cooldown = self._cooldown_bars
                 return Signal(symbol=symbol, direction=Direction.FLAT,
-                              entry_price=close, stop_price=Decimal("0"),
-                              reason="Trend/SR exit (stop, MA or resistance break)")
+                              entry_price=exit_px, stop_price=Decimal("0"),
+                              reason=f"Trend/SR exit ({reason})")
             return None
 
         # ── Look for an entry ─────────────────────────────────────────────────

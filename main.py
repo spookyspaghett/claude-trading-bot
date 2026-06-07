@@ -221,7 +221,7 @@ async def run(slug: str | None = None) -> None:
         loser_cut_pct=config.risk.loser_cut_pct,
         enable_claude_filter=config.ai.enable_claude_filter,
         fractional=is_crypto,
-        broker_trailing_stop=not is_crypto,
+        place_broker_stop=not is_crypto,
     )
 
     # Pre-market research: score each symbol before the trading loop

@@ -70,6 +70,30 @@ class BacktestBar:
     volume: float = 0.0
 
 
+# ── Costs (slippage + commission) ─────────────────────────────────────────────
+
+@dataclass
+class Costs:
+    """Per-fill trading frictions applied in every backtest replay."""
+    slippage_bps: float = 0.0    # adverse price move per fill, in basis points
+    commission: float = 0.0      # cash cost per fill (charged on entry and exit)
+
+    def fill(self, price: Decimal, is_buy: bool) -> Decimal:
+        """Adjust a fill price adversely by slippage (buys pay more, sells less)."""
+        f = Decimal(str(self.slippage_bps)) / Decimal("10000")
+        return price * (Decimal("1") + f) if is_buy else price * (Decimal("1") - f)
+
+    @property
+    def round_trip(self) -> Decimal:
+        return Decimal(str(self.commission)) * 2
+
+    def apply(self, base_pnl: Decimal, entry: Decimal, exit_px: Decimal, qty: Decimal) -> Decimal:
+        """Deduct round-trip commission + both-sided slippage from a trade's PnL."""
+        f = Decimal(str(self.slippage_bps)) / Decimal("10000")
+        slip = f * (abs(entry) + abs(exit_px)) * abs(qty)
+        return base_pnl - self.round_trip - slip
+
+
 # ── Result types ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -150,8 +174,16 @@ def _run_with_bars(
     orb_config: OrbConfig,
     risk_config: RiskConfig,
     starting_equity: Decimal = Decimal("500000"),
+    costs: Costs | None = None,
 ) -> BacktestResult:
-    """Replay the ORB strategy over 1-minute BacktestBar objects."""
+    """Replay the ORB strategy over 1-minute bars using the SAME risk model as
+    live (fix #1/#2): a fixed protective stop at stop_loss_pct that trails up by
+    trailing_stop_pct, a loser-cut hard exit, and an EOD flatten.
+    """
+    costs = costs or Costs()
+    trail = Decimal(str(risk_config.trailing_stop_pct)) / Decimal("100")
+    loser_cut = Decimal(str(risk_config.loser_cut_pct)) / Decimal("100")
+    one = Decimal("1")
 
     days: dict[date, list[BacktestBar]] = {}
     for bar in bars:
@@ -178,6 +210,17 @@ def _run_with_bars(
         )
 
         open_trade: Trade | None = None
+        cur_stop = Decimal("0")   # trails up; established BEFORE the current bar
+        peak = Decimal("0")
+        trailed = False
+
+        def _close(t: Trade, px: Decimal, when: datetime, reason: str) -> Decimal:
+            is_buy = t.direction == "BUY"
+            fill = costs.fill(px, is_buy=not is_buy)   # exit is the opposite side
+            pnl = ((fill - t.entry_price) if is_buy else (t.entry_price - fill)) * t.qty
+            pnl -= costs.round_trip
+            t.exit_time, t.exit_price, t.exit_reason, t.pnl = when, fill, reason, pnl
+            return pnl
 
         for bar in day_bars:
             bar_high  = Decimal(str(bar.high))
@@ -186,40 +229,50 @@ def _run_with_bars(
             bar_et    = _to_et(bar.timestamp)
 
             if open_trade is not None:
-                stopped = False
-                if open_trade.direction == "BUY" and bar_low <= open_trade.stop_price:
-                    exit_px = open_trade.stop_price
-                    pnl     = (exit_px - open_trade.entry_price) * open_trade.qty
-                    stopped = True
-                elif open_trade.direction == "SELL" and bar_high >= open_trade.stop_price:
-                    exit_px = open_trade.stop_price
-                    pnl     = (open_trade.entry_price - exit_px) * open_trade.qty
-                    stopped = True
-
-                if stopped:
-                    open_trade.exit_time   = bar_et
-                    open_trade.exit_price  = exit_px   # type: ignore[possibly-undefined]
-                    open_trade.exit_reason = "stop"
-                    open_trade.pnl         = pnl       # type: ignore[possibly-undefined]
-                    equity += pnl                       # type: ignore[possibly-undefined]
+                # 1. Stop check FIRST, using the stop set on prior bars (no
+                #    same-bar look-ahead, #10). Fill at the stop price.
+                hit = (open_trade.direction == "BUY" and bar_low <= cur_stop) or \
+                      (open_trade.direction == "SELL" and bar_high >= cur_stop)
+                if hit:
+                    pnl = _close(open_trade, cur_stop, bar_et, "trail" if trailed else "stop")
+                    equity += pnl
                     trades.append(open_trade)
-                    risk.record_fill(symbol, Decimal("0"), pnl)   # type: ignore[possibly-undefined]
+                    risk.record_fill(symbol, Decimal("0"), pnl)
                     open_trade = None
                     continue
+
+                # 2. Loser-cut hard exit at close (mirrors live poll_positions).
+                if open_trade.direction == "BUY":
+                    loss = (open_trade.entry_price - bar_close) / open_trade.entry_price
+                else:
+                    loss = (bar_close - open_trade.entry_price) / open_trade.entry_price
+                if loser_cut > 0 and loss >= loser_cut:
+                    pnl = _close(open_trade, bar_close, bar_et, "loser_cut")
+                    equity += pnl
+                    trades.append(open_trade)
+                    risk.record_fill(symbol, Decimal("0"), pnl)
+                    open_trade = None
+                    continue
+
+                # 3. Raise the trailing stop for the NEXT bar.
+                if trail > 0:
+                    if open_trade.direction == "BUY":
+                        peak = max(peak, bar_high)
+                        new_stop = peak * (one - trail)
+                        if new_stop > cur_stop:
+                            cur_stop, trailed = new_stop, True
+                    else:
+                        peak = min(peak, bar_low)
+                        new_stop = peak * (one + trail)
+                        if new_stop < cur_stop:
+                            cur_stop, trailed = new_stop, True
 
             sig = strategy.on_bar(bar)  # type: ignore[arg-type]
             if sig is None:
                 continue
 
             if sig.direction == Direction.FLAT and open_trade is not None:
-                if open_trade.direction == "BUY":
-                    pnl = (bar_close - open_trade.entry_price) * open_trade.qty
-                else:
-                    pnl = (open_trade.entry_price - bar_close) * open_trade.qty
-                open_trade.exit_time   = bar_et
-                open_trade.exit_price  = bar_close
-                open_trade.exit_reason = "eod"
-                open_trade.pnl         = pnl
+                pnl = _close(open_trade, bar_close, bar_et, "eod")
                 equity += pnl
                 trades.append(open_trade)
                 open_trade = None
@@ -231,30 +284,24 @@ def _run_with_bars(
                 qty = risk.compute_qty(sig.entry_price)
                 if qty <= Decimal("0"):
                     continue
+                is_buy = sig.direction == Direction.BUY
+                entry_fill = costs.fill(sig.entry_price, is_buy=is_buy)
                 open_trade = Trade(
-                    symbol=symbol,
-                    direction=sig.direction.value,
-                    entry_time=bar_et,
-                    entry_price=sig.entry_price,
-                    stop_price=sig.stop_price,
-                    qty=qty,
+                    symbol=symbol, direction=sig.direction.value,
+                    entry_time=bar_et, entry_price=entry_fill,
+                    stop_price=sig.stop_price, qty=qty,
                 )
+                cur_stop = sig.stop_price
+                peak = entry_fill
+                trailed = False
                 risk.record_fill(symbol, qty, Decimal("0"))
 
         if open_trade is not None and day_bars:
-            last   = day_bars[-1]
-            exit_px = Decimal(str(last.close))
-            pnl = (
-                (exit_px - open_trade.entry_price) * open_trade.qty
-                if open_trade.direction == "BUY"
-                else (open_trade.entry_price - exit_px) * open_trade.qty
-            )
-            open_trade.exit_time   = _to_et(last.timestamp)
-            open_trade.exit_price  = exit_px
-            open_trade.exit_reason = "eod_forced"
-            open_trade.pnl         = pnl
+            last = day_bars[-1]
+            pnl = _close(open_trade, Decimal(str(last.close)), _to_et(last.timestamp), "eod_forced")
             equity += pnl
             trades.append(open_trade)
+            open_trade = None
 
         equity_curve.append({
             "timestamp": int(
@@ -270,7 +317,7 @@ def _run_with_bars(
         trades=trades,
         equity_curve=equity_curve,
         stats=_compute_stats(trades, equity_curve),
-        strategy_used="ORB (1-minute bars)",
+        strategy_used="ORB (1-min, fixed stop + trail + loser-cut)",
     )
 
 
@@ -283,16 +330,17 @@ def _run_with_daily_bars(
     end: date,
     risk_config: RiskConfig,
     lookback: int = 40,
-    long_only: bool = False,
-    trend_ma: int = 0,
-    fast_ma: int = 50,
+    long_only: bool = True,        # defaults match the live DonchianLiveStrategy (#3)
+    trend_ma: int = 200,
+    fast_ma: int = 0,
     atr_period: int = 14,
     atr_multiplier: float = 1.5,
     use_atr_stop: bool = True,
-    volume_filter_days: int = 20,
-    trailing_activation_pct: float = 2.0,
+    volume_filter_days: int = 0,
+    trailing_activation_pct: float = 1.0,
     trailing_pct: float = 8.0,
     starting_equity: Decimal = Decimal("500000"),
+    costs: Costs | None = None,
 ) -> BacktestResult:
     """N-day Donchian channel breakout on daily OHLC bars.
 
@@ -317,6 +365,7 @@ def _run_with_daily_bars(
         )
 
     bars = sorted(bars, key=lambda b: b.timestamp)
+    costs = costs or Costs()
 
     stop_factor       = Decimal(str(risk_config.stop_loss_pct)) / Decimal("100")
     _trailing_mult    = Decimal(str(trailing_pct)) / Decimal("100")
@@ -380,22 +429,8 @@ def _run_with_daily_bars(
         bar_et    = _to_et(bar.timestamp)
         bar_date  = bar_et.date()
 
-        # ── 1. Update trailing stop ───────────────────────────────────────────
-        if open_trade is not None and trailing_pct > 0:
-            if open_trade.direction == "BUY":
-                best_px = max(best_px, bar_high)
-                gain    = (bar_close - open_trade.entry_price) / open_trade.entry_price
-                if gain >= _trailing_act_pct:
-                    new_trail    = best_px * (Decimal("1") - _trailing_mult)
-                    current_stop_px = max(current_stop_px, new_trail.quantize(Decimal("0.01")))
-            else:
-                best_px = min(best_px, bar_low)
-                gain    = (open_trade.entry_price - bar_close) / open_trade.entry_price
-                if gain >= _trailing_act_pct:
-                    new_trail    = best_px * (Decimal("1") + _trailing_mult)
-                    current_stop_px = min(current_stop_px, new_trail.quantize(Decimal("0.01")))
-
-        # ── 2. Check stop (initial or trailing) ───────────────────────────────
+        # ── 1. Check stop FIRST, using the stop established on prior bars ──────
+        #    (no same-bar look-ahead — the trail is raised below, after this, #10)
         if open_trade is not None:
             stopped     = False
             exit_reason = "stop"
@@ -416,6 +451,7 @@ def _run_with_daily_bars(
                     exit_reason = "trail"
 
             if stopped:
+                pnl = costs.apply(pnl, open_trade.entry_price, exit_px, open_trade.qty)
                 open_trade.exit_time   = bar_et
                 open_trade.exit_price  = exit_px
                 open_trade.exit_reason = exit_reason
@@ -427,6 +463,21 @@ def _run_with_daily_bars(
                 open_trade      = None
                 current_stop_px = Decimal("0")
                 best_px         = Decimal("0")
+
+        # ── 2. Raise the trailing stop for the NEXT bar ───────────────────────
+        if open_trade is not None and trailing_pct > 0:
+            if open_trade.direction == "BUY":
+                best_px = max(best_px, bar_high)
+                gain    = (bar_close - open_trade.entry_price) / open_trade.entry_price
+                if gain >= _trailing_act_pct:
+                    new_trail    = best_px * (Decimal("1") - _trailing_mult)
+                    current_stop_px = max(current_stop_px, new_trail.quantize(Decimal("0.01")))
+            else:
+                best_px = min(best_px, bar_low)
+                gain    = (open_trade.entry_price - bar_close) / open_trade.entry_price
+                if gain >= _trailing_act_pct:
+                    new_trail    = best_px * (Decimal("1") + _trailing_mult)
+                    current_stop_px = min(current_stop_px, new_trail.quantize(Decimal("0.01")))
 
         # ── 3. Check reverse / channel exit ──────────────────────────────────
         if open_trade is not None:
@@ -440,6 +491,7 @@ def _run_with_daily_bars(
                     if open_trade.direction == "BUY"
                     else (open_trade.entry_price - bar_close) * open_trade.qty
                 )
+                pnl = costs.apply(pnl, open_trade.entry_price, bar_close, open_trade.qty)
                 open_trade.exit_time   = bar_et
                 open_trade.exit_price  = bar_close
                 open_trade.exit_reason = "channel"
@@ -516,6 +568,7 @@ def _run_with_daily_bars(
             if open_trade.direction == "BUY"
             else (open_trade.entry_price - exit_px) * open_trade.qty
         )
+        pnl = costs.apply(pnl, open_trade.entry_price, exit_px, open_trade.qty)
         open_trade.exit_time   = _to_et(last.timestamp)
         open_trade.exit_price  = exit_px
         open_trade.exit_reason = "end"
@@ -559,15 +612,17 @@ def _run_with_trend_sr(
     volume_mult: float = 0.0,
     volume_ma: int = 20,
     starting_equity: Decimal = Decimal("500000"),
+    costs: Costs | None = None,
 ) -> BacktestResult:
     """Replay the Trend + Support/Resistance strategy over OHLC bars.
 
     The strategy itself decides entries and exits (emitting BUY/SELL/FLAT); here
-    we translate those into fills at the signalling bar's close and track P&L.
+    we translate those into fills (with slippage/commission) and track P&L.
     """
     from config_loader import TrendSRConfig
     from strategy import Direction, TrendSRStrategy
 
+    costs = costs or Costs()
     bars = sorted(bars, key=lambda b: b.timestamp)
     # bar_minutes=1 → evaluate each uploaded bar directly (the file already has the
     # timeframe being tested). regime_ma defaults on so backtests match live.
@@ -602,19 +657,20 @@ def _run_with_trend_sr(
             assert sig is not None
             qty = risk.compute_qty(sig.entry_price, fractional=True)
             if qty > Decimal("0"):
+                is_buy = sig.direction == Direction.BUY
                 open_trade = Trade(
                     symbol=symbol, direction=sig.direction.value,
-                    entry_time=bar_et, entry_price=sig.entry_price,
+                    entry_time=bar_et, entry_price=costs.fill(sig.entry_price, is_buy=is_buy),
                     stop_price=sig.stop_price, qty=qty,
                 )
         elif direction == Direction.FLAT and open_trade is not None:
             assert sig is not None
-            exit_px = sig.entry_price
+            exit_px = costs.fill(sig.entry_price, is_buy=open_trade.direction != "BUY")
             pnl = (
                 (exit_px - open_trade.entry_price) * open_trade.qty
                 if open_trade.direction == "BUY"
                 else (open_trade.entry_price - exit_px) * open_trade.qty
-            )
+            ) - costs.round_trip
             open_trade.exit_time = bar_et
             open_trade.exit_price = exit_px
             open_trade.exit_reason = "signal"
@@ -630,12 +686,12 @@ def _run_with_trend_sr(
 
     if open_trade is not None:
         last = bars[-1]
-        exit_px = Decimal(str(last.close))
+        exit_px = costs.fill(Decimal(str(last.close)), is_buy=open_trade.direction != "BUY")
         pnl = (
             (exit_px - open_trade.entry_price) * open_trade.qty
             if open_trade.direction == "BUY"
             else (open_trade.entry_price - exit_px) * open_trade.qty
-        )
+        ) - costs.round_trip
         open_trade.exit_time = _to_et(last.timestamp)
         open_trade.exit_price = exit_px
         open_trade.exit_reason = "end"
@@ -657,6 +713,129 @@ def _run_with_trend_sr(
         symbol=symbol, start_date=str(start), end_date=str(end),
         trades=trades, equity_curve=equity_curve,
         stats=_compute_stats(trades, equity_curve), strategy_used=name,
+    )
+
+
+def _run_with_ema(
+    symbol: str,
+    bars: list[BacktestBar],
+    start: date,
+    end: date,
+    risk_config: RiskConfig,
+    *,
+    fast_period: int = 21,
+    slow_period: int = 55,
+    starting_equity: Decimal = Decimal("500000"),
+    costs: Costs | None = None,
+) -> BacktestResult:
+    """Replay the EMA crossover with the SAME live risk model (#8): cross signals
+    for entries/exits, plus a fixed stop that trails and a loser-cut."""
+    from config_loader import EmaConfig
+    from strategy import Direction, EMAStrategy
+
+    costs = costs or Costs()
+    trail = Decimal(str(risk_config.trailing_stop_pct)) / Decimal("100")
+    loser_cut = Decimal(str(risk_config.loser_cut_pct)) / Decimal("100")
+    one = Decimal("1")
+
+    bars = sorted(bars, key=lambda b: b.timestamp)
+    cfg = EmaConfig(fast_period=fast_period, slow_period=slow_period,
+                    entry_order_type="market", eod_exit_time="15:50")
+    strat = EMAStrategy(cfg, [symbol], stop_loss_pct=risk_config.stop_loss_pct, trade_24_7=True)
+    risk = RiskManager(
+        max_position_usd=risk_config.max_position_usd,
+        stop_loss_pct=risk_config.stop_loss_pct,
+        daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
+        max_open_positions=risk_config.max_open_positions,
+    )
+
+    trades: list[Trade] = []
+    equity = starting_equity
+    equity_curve: list[dict[str, object]] = []
+    open_trade: Trade | None = None
+    cur_stop = Decimal("0")
+    peak = Decimal("0")
+    trailed = False
+
+    def _close(t: Trade, px: Decimal, when: datetime, reason: str) -> Decimal:
+        is_buy = t.direction == "BUY"
+        fill = costs.fill(px, is_buy=not is_buy)
+        pnl = ((fill - t.entry_price) if is_buy else (t.entry_price - fill)) * t.qty
+        pnl -= costs.round_trip
+        t.exit_time, t.exit_price, t.exit_reason, t.pnl = when, fill, reason, pnl
+        return pnl
+
+    for bar in bars:
+        bar_high = Decimal(str(bar.high))
+        bar_low = Decimal(str(bar.low))
+        bar_close = Decimal(str(bar.close))
+        bar_et = _to_et(bar.timestamp)
+
+        if open_trade is not None:
+            hit = (open_trade.direction == "BUY" and bar_low <= cur_stop) or \
+                  (open_trade.direction == "SELL" and bar_high >= cur_stop)
+            if hit:
+                pnl = _close(open_trade, cur_stop, bar_et, "trail" if trailed else "stop")
+                equity += pnl
+                trades.append(open_trade)
+                risk.record_fill(symbol, Decimal("0"), pnl)
+                open_trade = None
+            else:
+                if open_trade.direction == "BUY":
+                    loss = (open_trade.entry_price - bar_close) / open_trade.entry_price
+                else:
+                    loss = (bar_close - open_trade.entry_price) / open_trade.entry_price
+                if loser_cut > 0 and loss >= loser_cut:
+                    pnl = _close(open_trade, bar_close, bar_et, "loser_cut")
+                    equity += pnl
+                    trades.append(open_trade)
+                    risk.record_fill(symbol, Decimal("0"), pnl)
+                    open_trade = None
+                elif trail > 0:
+                    if open_trade.direction == "BUY":
+                        peak = max(peak, bar_high)
+                        if peak * (one - trail) > cur_stop:
+                            cur_stop, trailed = peak * (one - trail), True
+                    else:
+                        peak = min(peak, bar_low)
+                        if peak * (one + trail) < cur_stop:
+                            cur_stop, trailed = peak * (one + trail), True
+
+        sig = strat.on_bar(bar)  # type: ignore[arg-type]
+        if sig is not None and sig.direction == Direction.FLAT and open_trade is not None:
+            pnl = _close(open_trade, sig.entry_price, bar_et, "signal")
+            equity += pnl
+            trades.append(open_trade)
+            open_trade = None
+        elif (sig is not None and sig.direction in (Direction.BUY, Direction.SELL)
+              and open_trade is None):
+            ok, _ = risk.check_new_order(symbol)
+            if ok:
+                qty = risk.compute_qty(sig.entry_price)
+                if qty > Decimal("0"):
+                    is_buy = sig.direction == Direction.BUY
+                    entry_fill = costs.fill(sig.entry_price, is_buy=is_buy)
+                    open_trade = Trade(
+                        symbol=symbol, direction=sig.direction.value,
+                        entry_time=bar_et, entry_price=entry_fill,
+                        stop_price=sig.stop_price, qty=qty,
+                    )
+                    cur_stop, peak, trailed = sig.stop_price, entry_fill, False
+                    risk.record_fill(symbol, qty, Decimal("0"))
+
+        equity_curve.append({"timestamp": int(bar_et.timestamp()), "equity": float(equity)})
+
+    if open_trade is not None:
+        last = bars[-1]
+        pnl = _close(open_trade, Decimal(str(last.close)), _to_et(last.timestamp), "end")
+        equity += pnl
+        trades.append(open_trade)
+
+    return BacktestResult(
+        symbol=symbol, start_date=str(start), end_date=str(end),
+        trades=trades, equity_curve=equity_curve,
+        stats=_compute_stats(trades, equity_curve),
+        strategy_used=f"EMA crossover ({fast_period}/{slow_period}, stop+trail+loser-cut)",
     )
 
 
@@ -896,14 +1075,14 @@ def _run_sync_from_bars(
     orb_config: OrbConfig,
     risk_config: RiskConfig,
     lookback: int = 40,
-    long_only: bool = False,
-    trend_ma: int = 0,
-    fast_ma: int = 50,
+    long_only: bool = True,        # defaults match the live DonchianLiveStrategy (#3)
+    trend_ma: int = 200,
+    fast_ma: int = 0,
     atr_period: int = 14,
     atr_multiplier: float = 1.5,
     use_atr_stop: bool = True,
-    volume_filter_days: int = 20,
-    trailing_activation_pct: float = 2.0,
+    volume_filter_days: int = 0,
+    trailing_activation_pct: float = 1.0,
     trailing_pct: float = 8.0,
     starting_equity: Decimal = Decimal("500000"),
     strategy: str = "auto",
@@ -915,9 +1094,11 @@ def _run_sync_from_bars(
     adx_period: int = 14,
     volume_mult: float = 0.0,
     volume_ma: int = 20,
+    costs: Costs | None = None,
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
+    costs = costs or Costs()
 
     et_dates = [_to_et(b.timestamp).date() for b in bars]
     start, end = min(et_dates), max(et_dates)
@@ -932,7 +1113,13 @@ def _run_sync_from_bars(
             long_only=long_only,
             min_adx=min_adx, adx_period=adx_period,
             volume_mult=volume_mult, volume_ma=volume_ma,
-            starting_equity=starting_equity,
+            starting_equity=starting_equity, costs=costs,
+        )
+    if strategy == "ema":
+        return _run_with_ema(
+            symbol, bars, start, end, risk_config,
+            fast_period=ma_fast, slow_period=ma_slow,
+            starting_equity=starting_equity, costs=costs,
         )
 
     if _is_daily_data(bars):
@@ -942,10 +1129,11 @@ def _run_sync_from_bars(
             fast_ma=fast_ma, atr_period=atr_period, atr_multiplier=atr_multiplier,
             use_atr_stop=use_atr_stop, volume_filter_days=volume_filter_days,
             trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
-            starting_equity=starting_equity,
+            starting_equity=starting_equity, costs=costs,
         )
     else:
-        return _run_with_bars(symbol, bars, start, end, orb_config, risk_config, starting_equity)
+        return _run_with_bars(symbol, bars, start, end, orb_config, risk_config,
+                              starting_equity, costs=costs)
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -979,13 +1167,26 @@ def _compute_stats(
         peak   = max(peak, eq)
         max_dd = max(max_dd, peak - eq)
 
+    # Sharpe from a DAILY-resampled equity curve so it's comparable across
+    # strategies regardless of bar cadence (#7). Trend/SR appends a point per
+    # 1-minute bar; collapsing to one equity value per calendar day fixes the
+    # hugely inflated Sharpe that came from annualising minute returns.
     sharpe = 0.0
-    if len(equity_curve) > 1:
-        equities = [Decimal(str(p["equity"])) for p in equity_curve]
+    daily_equity: list[Decimal] = []
+    last_day: object = None
+    for point in equity_curve:
+        ts = int(point["timestamp"])  # type: ignore[call-overload]
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        if day != last_day:
+            daily_equity.append(Decimal(str(point["equity"])))
+            last_day = day
+        else:
+            daily_equity[-1] = Decimal(str(point["equity"]))  # last value of the day
+    if len(daily_equity) > 2:
         rets = [
-            (equities[i] - equities[i - 1]) / equities[i - 1]
-            for i in range(1, len(equities))
-            if equities[i - 1] != 0
+            (daily_equity[i] - daily_equity[i - 1]) / daily_equity[i - 1]
+            for i in range(1, len(daily_equity))
+            if daily_equity[i - 1] != 0
         ]
         if len(rets) > 1:
             avg_r    = sum(rets) / len(rets)
@@ -993,7 +1194,7 @@ def _compute_stats(
             try:
                 std = variance.sqrt()
                 if std > 0:
-                    sharpe = float(avg_r / std * Decimal("15.87"))  # ≈ sqrt(252)
+                    sharpe = float(avg_r / std * Decimal("15.87"))  # √252 trading days
             except InvalidOperation:
                 pass
 
@@ -1043,14 +1244,14 @@ async def run_backtest_from_file(
     orb_config: OrbConfig,
     risk_config: RiskConfig,
     lookback: int = 40,
-    long_only: bool = False,
-    trend_ma: int = 0,
-    fast_ma: int = 50,
+    long_only: bool = True,        # defaults match the live DonchianLiveStrategy (#3)
+    trend_ma: int = 200,
+    fast_ma: int = 0,
     atr_period: int = 14,
     atr_multiplier: float = 1.5,
     use_atr_stop: bool = True,
-    volume_filter_days: int = 20,
-    trailing_activation_pct: float = 2.0,
+    volume_filter_days: int = 0,
+    trailing_activation_pct: float = 1.0,
     trailing_pct: float = 8.0,
     starting_equity: Decimal = Decimal("500000"),
     strategy: str = "auto",
@@ -1062,6 +1263,8 @@ async def run_backtest_from_file(
     adx_period: int = 14,
     volume_mult: float = 0.0,
     volume_ma: int = 20,
+    slippage_bps: float = 0.0,
+    commission: float = 0.0,
 ) -> BacktestResult:
     return await asyncio.to_thread(
         _run_sync_from_bars, symbol, bars, orb_config, risk_config,
@@ -1069,4 +1272,5 @@ async def run_backtest_from_file(
         use_atr_stop, volume_filter_days, trailing_activation_pct, trailing_pct,
         starting_equity, strategy, ma_fast, ma_slow, pivot_lookback, pivot_strength,
         min_adx, adx_period, volume_mult, volume_ma,
+        Costs(slippage_bps=slippage_bps, commission=commission),
     )

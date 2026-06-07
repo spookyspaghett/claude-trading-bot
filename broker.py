@@ -134,6 +134,9 @@ class BrokerClient:
             self._client.get_order_by_id, str(order_id)
         )
 
+    async def cancel_order(self, order_id: str) -> None:
+        await asyncio.to_thread(self._client.cancel_order_by_id, order_id)
+
     # ── bulk operations ──────────────────────────────────────────────────────
 
     async def cancel_all_orders(self) -> None:

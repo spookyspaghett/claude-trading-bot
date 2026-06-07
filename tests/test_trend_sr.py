@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -84,6 +85,25 @@ def test_exit_after_entry(strat: TrendSRStrategy) -> None:
 
 def test_unknown_symbol_ignored(strat: TrendSRStrategy) -> None:
     assert strat.on_bar(_bar("ETH/USD", 10, 9, 9.5, 0)) is None
+
+
+def test_intrabar_stop_exits_at_stop_when_aggregating() -> None:
+    # With 15m aggregation, a 1m bar that breaches the stop must exit immediately
+    # at the stop price — not wait for the candle to complete (#6).
+    cfg = TrendSRConfig(
+        bar_minutes=15, ma_fast=3, ma_slow=5, regime_ma=0, pivot_lookback=5,
+        pivot_strength=1, atr_period=3, atr_mult=1.5, breakout_buffer_atr=0.0,
+        cooldown_bars=0, trailing_activation_pct=2.0, trailing_pct=5.0, long_only=True,
+    )
+    s = TrendSRStrategy(cfg, ["BTC/USD"], trade_24_7=True)
+    st = s._state["BTC/USD"]
+    st.position = "BUY"
+    st.stop_price = Decimal("100")
+    # 1m bar: high 102, low 95 (< stop), close 101 — stop is breached intrabar.
+    sig = s.on_bar(_bar("BTC/USD", 102, 95, 101, 0))
+    assert sig is not None and sig.direction == Direction.FLAT
+    assert sig.entry_price == Decimal("100")   # filled at the stop, not the close
+    assert st.position == ""
 
 
 def test_shorts_allowed_when_not_long_only() -> None:

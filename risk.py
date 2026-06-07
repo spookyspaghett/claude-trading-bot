@@ -21,6 +21,9 @@ class RiskManager:
 
         self._daily_realized_pnl: Decimal = Decimal("0")
         self._open_positions: dict[str, Decimal] = {}  # symbol -> net qty
+        self._pending: set[str] = set()                # submitted entries not yet filled
+        self._unrealized_pnl: Decimal = Decimal("0")   # latest mark-to-market across positions
+        self._account_equity: Decimal | None = None    # latest account equity (for exposure cap)
         self._daily_limit_hit: bool = False
         self._kill_switch_triggered: bool = False
 
@@ -45,15 +48,44 @@ class RiskManager:
         # short: stop is above entry
         return (entry_price * (Decimal("1") + factor)).quantize(Decimal("0.01"))
 
+    def register_pending(self, symbol: str) -> None:
+        """Mark an entry as submitted-but-unfilled so simultaneous signals can't
+        momentarily exceed the open-position limit before fills land (#9)."""
+        self._pending.add(symbol)
+
+    def clear_pending(self, symbol: str) -> None:
+        self._pending.discard(symbol)
+
+    def set_account_equity(self, equity: Decimal) -> None:
+        self._account_equity = equity
+
+    def set_unrealized(self, unrealized_pnl: Decimal) -> None:
+        """Update mark-to-market PnL; trips the daily limit on deep unrealized
+        drawdown, not just realized losses (#9)."""
+        self._unrealized_pnl = unrealized_pnl
+        if (self._daily_realized_pnl + self._unrealized_pnl) <= -abs(self._daily_loss_limit_usd):
+            self._daily_limit_hit = True
+
+    def _active_symbols(self) -> set[str]:
+        open_syms = {s for s, q in self._open_positions.items() if q != Decimal("0")}
+        return open_syms | self._pending
+
     def check_new_order(self, symbol: str) -> tuple[bool, str]:
         """Return (allowed, reason). Empty reason string means allowed."""
         if self._kill_switch_triggered:
             return False, "kill switch active"
         if self._daily_limit_hit:
             return False, "daily loss limit reached"
-        open_count = sum(1 for q in self._open_positions.values() if q != Decimal("0"))
-        if symbol not in self._open_positions and open_count >= self._max_open_positions:
+        active = self._active_symbols()
+        # Count open AND pending entries toward the limit (#9).
+        if symbol not in active and len(active) >= self._max_open_positions:
             return False, f"max open positions ({self._max_open_positions}) reached"
+        # Aggregate-exposure cap: don't let total committed notional exceed equity (#9).
+        if self._account_equity is not None:
+            new_count = len(active) + (0 if symbol in active else 1)
+            projected = self._max_position_usd * new_count
+            if projected > self._account_equity:
+                return False, "aggregate exposure would exceed account equity"
         return True, ""
 
     def record_fill(
@@ -97,6 +129,8 @@ class RiskManager:
         self._daily_realized_pnl = Decimal("0")
         self._daily_limit_hit = False
         self._open_positions.clear()
+        self._pending.clear()
+        self._unrealized_pnl = Decimal("0")
 
     def reset_daily_limit(self) -> None:
         """Reset daily P&L counters without clearing open positions.

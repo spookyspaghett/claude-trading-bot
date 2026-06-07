@@ -22,6 +22,7 @@ class DonchianPosition:
     peak_price: float     # tracks best price seen since entry (for trailing stop)
     trailing_active: bool = False
     qty: float = 0.0
+    pending_exit: bool = False   # channel/exit signalled; awaiting the morning close fill
 
 
 @dataclass
@@ -130,6 +131,12 @@ class DonchianLiveStrategy:
         # ── Check existing position ───────────────────────────────────────────
         pos = self._positions.get(symbol)
         if pos is not None:
+            # Already flagged to exit (close not yet filled): keep re-queueing the
+            # exit until the fill removes it, so a restart can't strand it (#5).
+            if pos.pending_exit:
+                return ScanResult(action="exit", symbol=symbol,
+                                  channel_low=ch_low, channel_high=ch_high,
+                                  close_price=today_close)
             # Update trailing stop
             if pos.direction == "BUY":
                 pos.peak_price = max(pos.peak_price, today_high)
@@ -152,7 +159,10 @@ class DonchianLiveStrategy:
                 or pos.direction == "SELL" and today_close > ch_high
             )
             if channel_exit:
-                del self._positions[symbol]
+                # Flag for exit but KEEP the position persisted until the close
+                # actually fills (removed via remove_position). A restart before
+                # the morning close re-derives this exit from state (#5).
+                pos.pending_exit = True
                 self._save_state()
                 return ScanResult(action="exit", symbol=symbol,
                                   channel_low=ch_low, channel_high=ch_high,
@@ -206,9 +216,41 @@ class DonchianLiveStrategy:
             self._positions[symbol].qty = qty
             self._save_state()
 
+    def reanchor(self, symbol: str, fill_price: float) -> None:
+        """Re-anchor the stop to the ACTUAL fill price, preserving the stop
+        distance computed at scan time (#4). The scan sets the stop off the
+        prior close, but the order fills at the next open — a gap would
+        otherwise make realised risk far larger than intended.
+        """
+        pos = self._positions.get(symbol)
+        if pos is None or fill_price <= 0:
+            return
+        dist = abs(pos.entry_price - pos.stop_price)
+        pos.entry_price = fill_price
+        pos.peak_price = fill_price
+        if pos.direction == "BUY":
+            pos.stop_price = round(fill_price - dist, 2)
+        else:
+            pos.stop_price = round(fill_price + dist, 2)
+        self._save_state()
+
     def remove_position(self, symbol: str) -> None:
         self._positions.pop(symbol, None)
         self._save_state()
+
+    def positions_pending_entry(self) -> list[str]:
+        """Symbols created by a scan but not yet filled (qty == 0). Used to
+        re-derive the morning entry queue after a restart (#5)."""
+        return [s for s, p in self._positions.items()
+                if p.qty == 0.0 and not p.pending_exit]
+
+    def positions_pending_exit(self) -> list[str]:
+        """Symbols flagged to exit but not yet closed — re-derived on restart (#5)."""
+        return [s for s, p in self._positions.items() if p.pending_exit]
+
+    def direction_of(self, symbol: str) -> str:
+        pos = self._positions.get(symbol)
+        return pos.direction if pos else ""
 
     @property
     def open_positions(self) -> dict[str, DonchianPosition]:
