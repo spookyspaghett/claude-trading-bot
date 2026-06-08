@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from io import TextIOWrapper
@@ -12,6 +13,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 _processes: dict[str, subprocess.Popen[bytes]] = {}
 _log_fhs: dict[str, TextIOWrapper] = {}
 
+# Slugs the operator wants running. Persisted so an API/service restart can
+# relaunch the bots it was supervising (the child subprocesses die with the
+# parent on a systemd restart). An intentional stop removes the slug; a crash
+# leaves it so status surfaces "was running, now stopped".
+_DESIRED_PATH = PROJECT_ROOT / "logs" / "running_bots.json"
+
 
 def _log_dir(slug: str) -> Path:
     return PROJECT_ROOT / "logs" / slug
@@ -23,6 +30,39 @@ def _stderr_path(slug: str) -> Path:
 
 def _kill_path(slug: str) -> Path:
     return _log_dir(slug) / "KILL"
+
+
+# ── desired-state persistence ───────────────────────────────────────────────
+
+def _load_desired() -> set[str]:
+    if not _DESIRED_PATH.exists():
+        return set()
+    try:
+        return set(json.loads(_DESIRED_PATH.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+
+def _save_desired(slugs: set[str]) -> None:
+    try:
+        _DESIRED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DESIRED_PATH.write_text(json.dumps(sorted(slugs), indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _add_desired(slug: str) -> None:
+    d = _load_desired()
+    if slug not in d:
+        d.add(slug)
+        _save_desired(d)
+
+
+def _remove_desired(slug: str) -> None:
+    d = _load_desired()
+    if slug in d:
+        d.discard(slug)
+        _save_desired(d)
 
 
 def start(slug: str) -> dict[str, object]:
@@ -55,6 +95,7 @@ def start(slug: str) -> dict[str, object]:
 
     _processes[slug] = process
     _log_fhs[slug] = log_fh
+    _add_desired(slug)
     return {"ok": True, "pid": process.pid}
 
 
@@ -76,6 +117,7 @@ def stop(slug: str) -> dict[str, object]:
         process.wait(timeout=5)
 
     _cleanup(slug)
+    _remove_desired(slug)   # intentional stop → don't relaunch on next API startup
     if kill_path.exists():
         kill_path.unlink()
     return {"ok": True}
@@ -109,11 +151,39 @@ def get_pid(slug: str) -> int | None:
 
 
 def status_map() -> dict[str, dict[str, object]]:
-    """Running state for every slug we have ever launched this session."""
-    return {
-        slug: {"running": is_running(slug), "pid": get_pid(slug)}
-        for slug in list(_processes.keys())
-    }
+    """Running state for every slug we have launched this session or that is
+    persisted as desired-running. A desired slug that isn't running is flagged
+    ``stopped_unexpectedly`` so the operator sees a bot that died/was lost."""
+    desired = _load_desired()
+    slugs = set(_processes.keys()) | desired
+    out: dict[str, dict[str, object]] = {}
+    for slug in slugs:
+        running = is_running(slug)
+        out[slug] = {
+            "running": running,
+            "pid": get_pid(slug),
+            "desired": slug in desired,
+            "stopped_unexpectedly": (slug in desired) and not running,
+        }
+    return out
+
+
+def relaunch_persisted() -> dict[str, object]:
+    """Relaunch bots that were running before an API/service restart. Skips any
+    that are already running or have a KILL file present (operator stopped them).
+    Paper-mode safety is unchanged — each bot is just ``main.py --profile`` and
+    the broker still enforces the live-trading confirmation."""
+    relaunched: list[str] = []
+    skipped: list[str] = []
+    for slug in sorted(_load_desired()):
+        if is_running(slug):
+            continue
+        if _kill_path(slug).exists():
+            skipped.append(slug)
+            continue
+        result = start(slug)
+        (relaunched if result.get("ok") else skipped).append(slug)
+    return {"ok": True, "relaunched": relaunched, "skipped": skipped}
 
 
 def get_stderr_log(slug: str, max_lines: int = 80) -> str:
