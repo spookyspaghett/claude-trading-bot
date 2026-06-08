@@ -79,7 +79,8 @@ def _build_strategy(config: object) -> tuple[Strategy, str]:
     return strat, order_type
 
 
-async def _run_donchian(config: object, kill_path: Path = Path("KILL")) -> None:
+async def _run_donchian(config: object, kill_path: Path = Path("KILL"),
+                        slug: str | None = None) -> None:
     """Separate run loop for the daily Donchian strategy."""
     from config_loader import Config
     from donchian_runner import DonchianRunner
@@ -110,6 +111,7 @@ async def _run_donchian(config: object, kill_path: Path = Path("KILL")) -> None:
         trailing_activation_pct=dc.trailing_activation_pct,
         trailing_pct=dc.trailing_pct,
         long_only=dc.long_only,
+        slug=slug,
     )
     runner = DonchianRunner(
         symbols=config.symbols,
@@ -119,6 +121,7 @@ async def _run_donchian(config: object, kill_path: Path = Path("KILL")) -> None:
         api_key=config.alpaca_api_key,
         secret_key=config.alpaca_secret_key,
         asset_class=config.asset_class,
+        slug=slug,
     )
 
     shutdown_event = asyncio.Event()
@@ -194,7 +197,7 @@ async def run(slug: str | None = None) -> None:
 
     # Donchian is a separate daily-bar loop — hand off and return
     if config.strategy.name == "donchian":
-        await _run_donchian(config, kill_path)
+        await _run_donchian(config, kill_path, slug)
         return
 
     try:

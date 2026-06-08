@@ -51,29 +51,37 @@ class DonchianLiveStrategy:
         trailing_activation_pct: float = 1.0,
         trailing_pct: float = 8.0,
         long_only: bool = True,
+        slug: str | None = None,
     ) -> None:
         self.lookback = lookback_days
         self.trend_ma = trend_ma
         self._trailing_act = trailing_activation_pct / 100.0
         self._trailing_pct = trailing_pct / 100.0
         self.long_only = long_only
+        # Per-profile state file so multiple Donchian bots don't share positions.
+        # Slug-less falls back to the shared default (and lets tests monkeypatch
+        # STATE_PATH).
+        self._state_path = (
+            STATE_PATH.with_name(f"donchian_state_{slug}.json") if slug
+            else STATE_PATH
+        )
         self._positions: dict[str, DonchianPosition] = {}
         self._load_state()
 
     # ── persistence ───────────────────────────────────────────────────────────
 
     def _load_state(self) -> None:
-        if STATE_PATH.exists():
+        if self._state_path.exists():
             try:
-                raw = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                raw = json.loads(self._state_path.read_text(encoding="utf-8"))
                 for sym, d in raw.get("positions", {}).items():
                     self._positions[sym] = DonchianPosition(**d)
             except Exception:
                 pass
 
     def _save_state(self) -> None:
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._state_path.write_text(
             json.dumps(
                 {"positions": {s: asdict(p) for s, p in self._positions.items()}},
                 indent=2,
@@ -215,6 +223,23 @@ class DonchianLiveStrategy:
         if symbol in self._positions:
             self._positions[symbol].qty = qty
             self._save_state()
+
+    def adopt_position(self, symbol: str, direction: str, entry_price: float,
+                       stop_price: float, qty: float) -> None:
+        """Begin tracking a live broker position that isn't in our state (#2),
+        e.g. one opened before a crash whose state file was lost. Channel bounds
+        are seeded from the entry so trailing logic has sane starting values;
+        the next EOD scan refines them."""
+        self._positions[symbol] = DonchianPosition(
+            symbol=symbol, direction=direction,
+            entry_price=entry_price,
+            entry_date=str(datetime.now(tz=ET).date()),
+            stop_price=stop_price,
+            channel_low=entry_price, channel_high=entry_price,
+            peak_price=entry_price,
+            qty=qty,
+        )
+        self._save_state()
 
     def reanchor(self, symbol: str, fill_price: float) -> None:
         """Re-anchor the stop to the ACTUAL fill price, preserving the stop

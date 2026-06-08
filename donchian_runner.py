@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import date, datetime, timedelta, timezone
 from datetime import time as dtime
 from decimal import Decimal
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from alpaca.data.enums import DataFeed
@@ -34,6 +36,13 @@ _MKTCLOSE    = dtime(16, 0)
 _CRYPTO_SCAN_START = dtime(0, 5)
 _CRYPTO_SCAN_END   = dtime(0, 20)
 
+# Where the runner persists its action queue + per-day debounce so the overnight
+# handoff survives a service restart. Separate from the strategy's position state.
+HANDOFF_PATH = Path("memory/donchian_handoff.json")
+# Queued actions older than this many calendar days are expired rather than fired
+# (covers a Fri-evening scan → Mon open long weekend; drops anything staler).
+_MAX_QUEUE_AGE_DAYS = 3
+
 
 class DonchianRunner:
     """Drives the daily Donchian strategy in live/paper mode.
@@ -53,23 +62,103 @@ class DonchianRunner:
         api_key: str,
         secret_key: str,
         asset_class: str = "stock",
+        slug: str | None = None,
     ) -> None:
         self._symbols      = symbols
         self._broker       = broker
         self._risk         = risk
         self._strategy     = strategy
         self._is_crypto    = asset_class == "crypto"
+        # Per-profile handoff file so multiple Donchian bots can run at once
+        # without clobbering each other's queue. Slug-less falls back to the
+        # shared default (and lets tests monkeypatch HANDOFF_PATH).
+        self._handoff_path = (
+            HANDOFF_PATH.with_name(f"donchian_handoff_{slug}.json") if slug
+            else HANDOFF_PATH
+        )
         self._data_client: CryptoHistoricalDataClient | StockHistoricalDataClient = (
             CryptoHistoricalDataClient(api_key, secret_key)
             if self._is_crypto
             else StockHistoricalDataClient(api_key, secret_key)
         )
-        # Queued from EOD scan, executed at next open
+        # Queued from EOD scan, executed at next open. Loaded from disk so the
+        # handoff survives a restart between the scan and the next open.
         self._queued_entries: dict[str, str] = {}   # symbol → "enter_long"|"enter_short"
         self._queued_exits: set[str]   = set()
-        # Debounce: track which time-windows we already ran today
+        self._queued_date: str = ""                 # ET date the queue was produced
+        # Entries placed but whose stop isn't yet anchored to the real fill (#3).
+        # Persisted so a restart still re-anchors once the fill is visible.
+        self._pending_reanchor: set[str] = set()
+        # Debounce: which time-windows we already ran today (persisted).
         self._ran_eod_date:   str = ""
         self._ran_open_date:  str = ""
+        self._load_handoff()
+
+    # ── handoff persistence (restart-safe queue + debounce) ────────────────────
+
+    def _load_handoff(self) -> None:
+        if not self._handoff_path.exists():
+            return
+        try:
+            d = json.loads(self._handoff_path.read_text(encoding="utf-8"))
+            self._queued_entries = dict(d.get("queued_entries", {}))
+            self._queued_exits = set(d.get("queued_exits", []))
+            self._queued_date = d.get("queued_date", "")
+            self._pending_reanchor = set(d.get("pending_reanchor", []))
+            self._ran_eod_date = d.get("ran_eod_date", "")
+            self._ran_open_date = d.get("ran_open_date", "")
+        except Exception as exc:
+            log_error("donchian_handoff_load_failed", error=str(exc))
+
+    def _save_handoff(self) -> None:
+        try:
+            self._handoff_path.parent.mkdir(parents=True, exist_ok=True)
+            self._handoff_path.write_text(json.dumps({
+                "queued_entries": self._queued_entries,
+                "queued_exits": sorted(self._queued_exits),
+                "queued_date": self._queued_date,
+                "pending_reanchor": sorted(self._pending_reanchor),
+                "ran_eod_date": self._ran_eod_date,
+                "ran_open_date": self._ran_open_date,
+            }, indent=2), encoding="utf-8")
+        except Exception as exc:
+            log_error("donchian_handoff_save_failed", error=str(exc))
+
+    def _expire_stale_queue(self) -> None:
+        """Drop a queue whose intended open has already passed so a late restart
+        never fires day-old market orders. Two triggers:
+          • multi-day age cap (covers week-long downtime), and
+          • a missed morning window: it's a weekday past 09:36 ET on a day after
+            the scan and we never ran that morning (restart after the open).
+        Unfilled entries are removed; exits keep their (filled) position tracked —
+        its stop still protects it and the next EOD scan re-queues the exit."""
+        if not self._queued_date:
+            return
+        try:
+            qd = date.fromisoformat(self._queued_date)
+        except ValueError:
+            return
+        now = datetime.now(tz=ET)
+        age = (now.date() - qd).days
+        missed_window = (
+            not self._is_crypto
+            and now.date() > qd
+            and now.time() > _OPEN_END
+            and now.weekday() < 5                       # Mon–Fri (weekend keeps Fri→Mon)
+            and self._ran_open_date != str(now.date())
+        )
+        if age <= _MAX_QUEUE_AGE_DAYS and not missed_window:
+            return
+        log_error("donchian_queue_expired", queued_date=self._queued_date, age_days=age,
+                  missed_window=missed_window,
+                  entries=list(self._queued_entries), exits=list(self._queued_exits))
+        for sym in list(self._queued_entries):
+            self._strategy.remove_position(sym)   # never filled → drop
+            self._pending_reanchor.discard(sym)
+        self._queued_entries.clear()
+        self._queued_exits.clear()
+        self._queued_date = ""
+        self._save_handoff()
 
     # ── main loop ─────────────────────────────────────────────────────────────
 
@@ -90,6 +179,8 @@ class DonchianRunner:
                  asset_class="crypto" if self._is_crypto else "stock")
         await alerts.alert_startup(self._symbols)
         self._rederive_queues()
+        self._expire_stale_queue()
+        await self._reconcile_with_broker()
 
         if self._is_crypto:
             await self._run_crypto(shutdown_event)
@@ -102,15 +193,13 @@ class DonchianRunner:
 
             # 16:05–16:12 → EOD scan (once per day)
             if _EOD_START <= t <= _EOD_END and self._ran_eod_date != today_s:
-                self._ran_eod_date = today_s
-                await self._run_eod_scan()
+                await self._run_eod_scan(today_s)
                 await asyncio.sleep(60)
                 continue
 
             # 09:31–09:36 → place morning orders (once per day)
             if _OPEN_START <= t <= _OPEN_END and self._ran_open_date != today_s:
-                self._ran_open_date = today_s
-                await self._place_morning_orders()
+                await self._place_morning_orders(today_s)
                 await asyncio.sleep(60)
                 continue
 
@@ -131,10 +220,9 @@ class DonchianRunner:
             today_s = str(now.date())
 
             if _CRYPTO_SCAN_START <= t <= _CRYPTO_SCAN_END and self._ran_eod_date != today_s:
-                self._ran_eod_date = today_s
-                await self._run_eod_scan()
+                await self._run_eod_scan(today_s)
                 # Crypto trades continuously — no "next open" wait, enter now.
-                await self._place_morning_orders()
+                await self._place_morning_orders(today_s)
                 await asyncio.sleep(60)
                 continue
 
@@ -168,11 +256,28 @@ class DonchianRunner:
         bars = list(raw[symbol]) if symbol in raw else []
         return bars[-n:] if len(bars) > n else bars
 
-    async def _run_eod_scan(self) -> None:
+    @staticmethod
+    def _bar_et_date(bar: object) -> date | None:
+        ts = getattr(bar, "timestamp", None)
+        if ts is None:
+            return None
+        try:
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            return ts.astimezone(ET).date()
+        except Exception:
+            return None
+
+    async def _run_eod_scan(self, ran_date: str) -> None:
         log_info("donchian_eod_scan_start", symbols=self._symbols)
         self._queued_entries.clear()
         self._queued_exits.clear()
         needed = self._strategy.lookback + self._strategy.trend_ma + 20
+        try:
+            expected = date.fromisoformat(ran_date)
+        except ValueError:
+            expected = datetime.now(tz=ET).date()
+        fresh_count = 0
 
         for symbol in self._symbols:
             try:
@@ -180,6 +285,16 @@ class DonchianRunner:
                 if not bars:
                     log_info("donchian_scan_no_bars", symbol=symbol)
                     continue
+
+                # #5: never act on a stale daily bar (data-provider lag or a
+                # non-session day). Skip the symbol so we don't trade on yesterday.
+                if not self._is_crypto:
+                    bar_date = self._bar_et_date(bars[-1])
+                    if bar_date is None or bar_date < expected:
+                        log_error("donchian_scan_stale_bar", symbol=symbol,
+                                  bar_date=str(bar_date), expected=str(expected))
+                        continue
+                fresh_count += 1
 
                 result = self._strategy.scan(symbol, bars)
                 log_info("donchian_scan_result", symbol=symbol,
@@ -210,28 +325,43 @@ class DonchianRunner:
             except Exception as exc:
                 log_error("donchian_scan_error", symbol=symbol, error=str(exc))
 
+        # Total data outage (stocks): not one symbol had today's bar. Don't mark
+        # the day done so the 16:05–16:12 window retries on the next 60s tick
+        # rather than skipping the whole session (#5).
+        if not self._is_crypto and self._symbols and fresh_count == 0:
+            log_error("donchian_eod_scan_stale_all", expected=str(expected))
+            return
+
+        # Persist the queue + debounce so the morning handoff survives a restart.
+        self._queued_date = ran_date
+        self._ran_eod_date = ran_date
+        self._save_handoff()
         log_info("donchian_eod_scan_done",
                  entries=list(self._queued_entries),
                  exits=list(self._queued_exits))
 
     # ── morning orders ────────────────────────────────────────────────────────
 
-    async def _place_morning_orders(self) -> None:
+    async def _place_morning_orders(self, ran_date: str) -> None:
         if not self._queued_entries and not self._queued_exits:
+            self._ran_open_date = ran_date
+            self._save_handoff()
             return
         log_info("donchian_morning_orders",
                  entries=list(self._queued_entries),
                  exits=list(self._queued_exits))
 
-        # Exits first to free up buying power
+        # Exits first to free up buying power. Only stop tracking a position once
+        # its close has actually filled (#1) — close_position is a market order.
         for symbol in list(self._queued_exits):
             try:
                 await self._broker.close_position(symbol)
                 self._strategy.remove_position(symbol)
+                self._queued_exits.discard(symbol)
+                self._save_handoff()
                 log_info("donchian_exit_placed", symbol=symbol)
             except Exception as exc:
                 log_error("donchian_exit_failed", symbol=symbol, error=str(exc))
-        self._queued_exits.clear()
 
         # Entry orders
         entered: list[str] = []
@@ -241,6 +371,8 @@ class DonchianRunner:
                 if not ok:
                     log_info("donchian_entry_blocked", symbol=symbol, reason=reason)
                     self._strategy.remove_position(symbol)
+                    self._queued_entries.pop(symbol, None)
+                    self._save_handoff()
                     continue
 
                 bars = await self._fetch_daily_bars(symbol, n=5)
@@ -250,6 +382,9 @@ class DonchianRunner:
                 qty   = self._risk.compute_qty(price, fractional=self._is_crypto)
                 if qty <= Decimal("0"):
                     log_info("donchian_entry_zero_qty", symbol=symbol)
+                    self._strategy.remove_position(symbol)
+                    self._queued_entries.pop(symbol, None)
+                    self._save_handoff()
                     continue
 
                 side  = OrderSide.BUY if action == "enter_long" else OrderSide.SELL
@@ -258,6 +393,12 @@ class DonchianRunner:
                 signed_qty = qty if side == OrderSide.BUY else -qty
                 self._risk.record_fill(symbol, signed_qty, Decimal("0"))
                 entered.append(symbol)
+                # Dequeue this entry as soon as it's placed so a mid-loop restart
+                # can't re-fire it; flag it for stop re-anchoring once the fill
+                # price is visible (#3).
+                self._queued_entries.pop(symbol, None)
+                self._pending_reanchor.add(symbol)
+                self._save_handoff()
 
                 log_info("donchian_entry_placed",
                          symbol=symbol, side=side.value, qty=str(qty))
@@ -270,32 +411,127 @@ class DonchianRunner:
 
             except Exception as exc:
                 log_error("donchian_entry_failed", symbol=symbol, error=str(exc))
+        # Morning window complete: mark debounce and clear the day's queue.
         self._queued_entries.clear()
-        await self._reanchor_stops(entered)
+        self._queued_exits.clear()
+        self._queued_date = ""
+        self._ran_open_date = ran_date
+        self._save_handoff()
+        await self._reanchor_stops()
 
-    async def _reanchor_stops(self, symbols: list[str]) -> None:
-        """Re-anchor each entry's stop to its actual fill price (#4). Market
-        orders fill ~immediately, so the live position's avg_entry_price is the
-        true fill we anchor the stop distance off of."""
-        if not symbols:
+    async def _reanchor_stops(self) -> None:
+        """Re-anchor pending entries' stops to their actual fill price (#3/#4).
+        A market order may not be visible at the broker the instant after submit,
+        so symbols stay in ``_pending_reanchor`` (persisted) and are retried on
+        every position check until the fill price appears."""
+        if not self._pending_reanchor:
             return
         try:
             live = {str(p.symbol): p for p in await self._broker.get_all_positions()}
         except Exception as exc:
             log_error("donchian_reanchor_failed", error=str(exc))
             return
-        for sym in symbols:
-            p = live.get(sym)
+        self._reanchor_from_map(live)
+
+    def _reanchor_from_map(self, live_map: dict) -> None:
+        if not self._pending_reanchor:
+            return
+        for sym in list(self._pending_reanchor):
+            p = live_map.get(sym)
             fill = float(getattr(p, "avg_entry_price", 0) or 0) if p is not None else 0.0
             if fill > 0:
                 self._strategy.reanchor(sym, fill)
+                self._pending_reanchor.discard(sym)
                 log_info("donchian_stop_reanchored", symbol=sym, fill=fill)
+        self._save_handoff()
+
+    # ── startup reconciliation (state vs broker) ───────────────────────────────
+
+    async def _reconcile_with_broker(self) -> None:
+        """Reconcile persisted state against the broker on startup (#2) so no
+        live position goes unmonitored and no phantom lingers in state:
+          • state has it, broker doesn't → drop it (closed/never opened while
+            down). Unfilled queued entries (qty==0) are legitimately broker-absent
+            and skipped.
+          • broker has it, state doesn't → adopt it with a sane ATR stop so it's
+            protected; loud log + alert either way."""
+        try:
+            live_list = await self._broker.get_all_positions()
+        except Exception as exc:
+            log_error("donchian_reconcile_failed", error=str(exc))
+            return
+        live_map = {str(p.symbol): p for p in live_list}
+
+        # 1) Tracked but not held at broker.
+        for sym, pos in list(self._strategy.open_positions.items()):
+            if sym in live_map:
+                continue
+            if pos.qty == 0.0 and not pos.pending_exit:
+                continue   # queued entry not yet placed — expected to be absent
+            reason = "exit_already_filled" if pos.pending_exit else "position_vanished"
+            log_error("donchian_reconcile_drop", symbol=sym, reason=reason,
+                      qty=pos.qty, stop=pos.stop_price)
+            await alerts.alert_error(
+                "donchian_reconcile_drop",
+                f"{sym} tracked but not held at broker ({reason}) — dropping from state.")
+            self._strategy.remove_position(sym)
+            self._queued_exits.discard(sym)
+            self._queued_entries.pop(sym, None)
+            self._pending_reanchor.discard(sym)
+
+        # 2) Held at broker but untracked → adopt so it's monitored.
+        for sym, live in live_map.items():
+            if sym in self._strategy.open_positions:
+                continue
+            await self._adopt_broker_position(sym, live)
+
+        self._save_handoff()
+
+    async def _adopt_broker_position(self, symbol: str, live: object) -> None:
+        qty   = float(getattr(live, "qty", 0) or 0)
+        entry = float(getattr(live, "avg_entry_price", 0) or 0)
+        if entry <= 0:
+            entry = float(getattr(live, "current_price", 0) or 0)
+        if entry <= 0 or qty == 0:
+            log_error("donchian_reconcile_adopt_skipped", symbol=symbol,
+                      entry=entry, qty=qty)
+            return
+        direction = "BUY" if qty > 0 else "SELL"
+        dist = await self._estimate_stop_dist(symbol, entry)
+        stop = round(entry - dist, 2) if direction == "BUY" else round(entry + dist, 2)
+        self._strategy.adopt_position(symbol=symbol, direction=direction,
+                                      entry_price=entry, stop_price=stop, qty=abs(qty))
+        log_error("donchian_reconcile_adopt", symbol=symbol, direction=direction,
+                  entry=entry, stop=stop, qty=abs(qty))
+        await alerts.alert_error(
+            "donchian_reconcile_adopt",
+            f"adopted untracked broker position {symbol} {direction} "
+            f"qty={abs(qty)} — stop set @ {stop}.")
+
+    async def _estimate_stop_dist(self, symbol: str, entry: float) -> float:
+        """ATR-based stop distance for an adopted position, mirroring the scan's
+        1.5×ATR. Falls back to an 8% stop if bars are unavailable."""
+        try:
+            bars = await self._fetch_daily_bars(symbol, n=20)
+            trs = []
+            for j in range(1, min(15, len(bars))):
+                b, prev = bars[-j], bars[-j - 1]
+                trs.append(max(
+                    float(b.high) - float(b.low),
+                    abs(float(b.high) - float(prev.close)),
+                    abs(float(b.low)  - float(prev.close)),
+                ))
+            if trs:
+                return round(sum(trs) / len(trs) * 1.5, 2)
+        except Exception as exc:
+            log_error("donchian_reconcile_atr_failed", symbol=symbol, error=str(exc))
+        return round(entry * 0.08, 2)
 
     # ── intraday stop check ───────────────────────────────────────────────────
 
     async def _check_open_positions(self) -> None:
         tracked = self._strategy.open_positions
-        if not tracked:
+        if not tracked and not self._pending_reanchor:
             return
 
         try:
@@ -303,6 +539,9 @@ class DonchianRunner:
         except Exception as exc:
             log_error("donchian_position_check_failed", error=str(exc))
             return
+
+        # Catch any entry whose fill wasn't yet visible at order time (#3).
+        self._reanchor_from_map(live_map)
 
         for symbol, pos in list(tracked.items()):
             live = live_map.get(symbol)
