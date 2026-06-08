@@ -1,15 +1,32 @@
 # claude-trading
 
-Alpaca paper-trading scaffold implementing a 15-minute Opening-Range Breakout (ORB) strategy on US equities.  **Paper mode only by default.**
+An Alpaca **paper-trading** bot and dashboard. It started as a single 15-minute
+Opening-Range Breakout (ORB) scaffold for US equities and has grown into a
+multi-strategy, multi-account platform with a web dashboard, backtesting, live
+price charts, and crypto support. **Paper mode only by default** — live trading
+requires an explicit typed confirmation.
 
-It also includes additional strategies (EMA crossover, daily Donchian breakout,
-and a Trend + Support/Resistance breakout), multi-account profiles, crypto
-support, and a backtesting dashboard.
+## What's inside
 
-### Strategy docs
-
-- [Trend/SR entry filters — ADX & volume confirmation](docs/trend_sr_filters.md)
-  — optional, backtestable filters that trade fewer, higher-quality breakouts.
+- **Strategies**
+  - **ORB** — 15-minute opening-range breakout (intraday equities).
+  - **EMA crossover** — fast/slow EMA (equities or 24/7 crypto).
+  - **Donchian** — daily-bar channel breakout; scans at the close (16:05 ET) and
+    executes at the next open (09:31 ET), with a trailing stop.
+  - **Trend/SR** — moving-average trend + pivot support/resistance breakout,
+    crypto-oriented, with an optional regime-MA filter and optional
+    [ADX & volume entry filters](docs/trend_sr_filters.md).
+- **Stocks and crypto** — crypto runs 24/7 (no market-hours gate, GTC orders,
+  fractional sizing, `BTC/USD` symbol format).
+- **Profiles** — each profile is a self-contained bundle (name, its own Alpaca
+  keys, asset class, symbols, strategy, risk). Stored locally and gitignored.
+- **Multiple accounts at once** — run one bot per profile concurrently, each with
+  its own dashboard tab, log stream, and kill switch.
+- **Web dashboard** (FastAPI + React) — per-profile account balance, positions,
+  P&L, live signal feed, candlestick price charts (with strategy overlays), a
+  config editor, and start/stop/kill controls.
+- **Backtesting** — ORB, Donchian, EMA, and Trend/SR, with modelled slippage and
+  commission; pull bars from Alpaca or upload a CSV/Excel file.
 
 ---
 
@@ -18,53 +35,28 @@ support, and a backtesting dashboard.
 | Tool | Version |
 |------|---------|
 | Python | 3.11 or later |
-| pip / uv | any recent |
-| Alpaca account | free at alpaca.markets |
+| Node.js | 18 or later (for the dashboard UI) |
+| Alpaca account | free at <https://alpaca.markets> |
 
 ---
 
-## 1 — Get your Alpaca paper API keys
+## Quick start (local dev — Windows / macOS / Linux)
+
+### 1 — Get Alpaca paper API keys
 
 1. Create a free account at <https://alpaca.markets>.
-2. In the dashboard, switch to **Paper Trading** (toggle in the top-left).
-3. Go to **API Keys** → **Generate New Key**.
-4. Copy the **API Key ID** and **Secret Key** — the secret is shown only once.
+2. Switch to **Paper Trading** (top-left toggle).
+3. **API Keys → Generate New Key** and copy the **API Key ID** + **Secret Key**
+   (the secret is shown only once).
 
----
-
-## 2 — Clone / copy the project
-
-```
-F:\Claude-trading\
-```
-
----
-
-## 3 — Create your `.env` file
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Open `.env` and fill in your paper credentials:
-
-```
-ALPACA_API_KEY=your_paper_api_key_here
-ALPACA_SECRET_KEY=your_paper_secret_key_here
-```
-
-Never commit `.env` to git — it is already in `.gitignore`.
-
----
-
-## 4 — Install dependencies
+### 2 — Install Python dependencies
 
 **With uv (recommended):**
 
 ```powershell
 pip install uv
 uv venv .venv
-.venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1     # macOS/Linux: source .venv/bin/activate
 uv pip install -e ".[dev]"
 ```
 
@@ -72,124 +64,140 @@ uv pip install -e ".[dev]"
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1     # macOS/Linux: source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
----
+### 3 — (Optional) seed credentials for the first profile
 
-## 5 — (Optional) install pre-commit hooks
-
-```powershell
-pip install pre-commit
-pre-commit install
-```
-
-This runs `ruff` and `mypy` before every commit.
-
----
-
-## 6 — Run the tests
+On first run the app **migrates** any legacy `config.yaml` + `.env` into a
+"Default" profile. If you want that seed, copy the template and fill it in:
 
 ```powershell
-pytest -v
+Copy-Item .env.example .env
 ```
 
-Expected output: all tests pass.  Coverage on `risk.py` and `strategy.py` should be above 80 %.
-
----
-
-## 7 — Configure your strategy
-
-Edit `config.yaml`:
-
-```yaml
-symbols:
-  - SPY
-  - AAPL
-  - MSFT
-  - NVDA
-
-risk:
-  max_position_usd: 5000      # max notional per position
-  stop_loss_pct: 1.0          # % of entry price
-  daily_loss_limit_usd: 500   # halt + flatten if daily P&L hits this
-  max_open_positions: 4
-
-strategy:
-  name: orb
-  orb:
-    opening_range_minutes: 15   # 09:30–09:45 ET
-    entry_order_type: limit     # or "market"
-    eod_exit_time: "15:50"      # flatten all at this time ET
+```
+ALPACA_API_KEY=your_paper_api_key_here
+ALPACA_SECRET_KEY=your_paper_secret_key_here
 ```
 
----
+`.env` and the `profiles/` directory are gitignored — never commit credentials.
+After the first run you create and edit profiles entirely from the dashboard's
+**Profiles** tab, so the `.env` seed is optional.
 
-## 8 — Start the bot
+### 4 — Run the dashboard
+
+Start the API (serves the bots, account data, and the built UI):
 
 ```powershell
-python main.py
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-The bot will:
+In a second terminal, run the UI in dev mode (hot reload):
 
-1. Connect to `https://paper-api.alpaca.markets`.
-2. Subscribe to live 1-minute bars for your configured symbols.
-3. Between 09:30–09:45 ET, record the opening-range high and low.
-4. After 09:45, fire a **limit buy** on a close above the range high, or a **limit sell** on a close below the range low.
-5. Attach a protective stop order at ±1 % of entry.
-6. Flatten all positions at 15:50 ET.
+```powershell
+cd ui
+npm install
+npm run dev          # http://localhost:5173
+```
 
-Structured logs are written to `logs/YYYY-MM-DD.jsonl`.
+For a production build the API serves the bundled UI directly:
+
+```powershell
+cd ui && npm run build      # outputs ui/dist, served by the API at :8000
+```
+
+Open the dashboard, create a profile (keys + asset class + symbols + strategy +
+risk), and press **Start** on its tab. Each running profile is a separate
+`python main.py --profile <slug>` process.
 
 ---
 
-## 9 — Verify a paper trade
+## Running a single bot from the CLI
 
-1. Open the [Alpaca paper dashboard](https://app.alpaca.markets).
-2. Go to **Paper Trading → Orders** to see submitted orders.
-3. Go to **Positions** to see open positions.
-4. Check `logs/` for JSONL entries with `"event": "order_submitted"` and `"event": "fill"`.
+You can also run one profile headless, without the dashboard:
+
+```powershell
+python main.py --profile <slug>     # omit --profile to use the active profile
+```
+
+Structured logs are written to `logs/<slug>/YYYY-MM-DD.jsonl`.
+
+---
+
+## Tests
+
+```powershell
+pytest -q
+```
+
+> Two `test_config.py` missing-key tests fail **only locally** when a real `.env`
+> is present (because `load_dotenv()` repopulates the keys); they pass in a clean
+> environment / CI.
 
 ---
 
 ## Kill switch
 
-Create an empty file called `KILL` in the project root while the bot is running:
+Each profile has its own kill file. From the dashboard, use the per-profile
+**Kill** button or the header **Kill all** button. Manually, create the file:
 
-```powershell
-New-Item KILL -ItemType File
+```
+logs/<slug>/KILL
 ```
 
-The bot will:
-1. Cancel all open orders.
-2. Market-close all positions.
-3. Exit cleanly.
+The bot will cancel open orders, market-close its positions (equities; crypto
+holds), and exit cleanly. Deleting the file (or pressing Start) re-arms it.
+
+---
+
+## Deployment (Ubuntu server)
+
+`setup.sh` provisions and updates a deployment under `/home/<user>/claude-trading`:
+
+```bash
+chmod +x setup.sh
+sudo ./setup.sh            # first run: install deps, build UI, create + start service
+sudo ./setup.sh --force    # force a full reinstall + UI rebuild
+```
+
+It installs Python + Node deps, builds the UI, and creates a systemd service
+`claude-trading` that runs `uvicorn api.main:app` on port 8000. Re-running pulls
+the latest git changes and rebuilds only what changed. Bots are launched from the
+dashboard; **if the API restarts, it relaunches the bots that were running**
+(tracked in `logs/running_bots.json`).
 
 ---
 
 ## Project layout
 
 ```
-F:\Claude-trading\
-├── config.yaml          # strategy + risk parameters (safe to commit)
-├── .env                 # API credentials (never commit)
-├── .env.example         # credential template
-├── pyproject.toml       # dependencies and tool config
-├── config_loader.py     # Pydantic config models
-├── logger.py            # structlog → daily JSONL
-├── risk.py              # position sizing, stop loss, daily limit, kill switch
-├── broker.py            # TradingClient wrapper
-├── data.py              # StockDataStream + 5m bar aggregation
-├── strategy.py          # ORBStrategy (abstract base + implementation)
-├── executor.py          # signal → risk check → order + stop
-├── main.py              # async event loop
-├── tests/
-│   ├── test_config.py
-│   ├── test_risk.py
-│   └── test_strategy.py
-└── logs/                # created automatically at runtime
+claude-trading/
+├── main.py               # per-profile async loop; branches on (asset_class, strategy)
+├── config_loader.py      # Pydantic v2 config models
+├── profiles.py           # profile store (CRUD) + legacy migration
+├── logger.py             # structlog → daily JSONL per profile
+├── risk.py               # sizing, stop, daily limit, kill switch, exposure caps
+├── broker.py             # async TradingClient wrapper + live-trading guard
+├── data.py               # Stock/Crypto data streams + bar aggregation
+├── strategy.py           # Strategy ABC + ORB, EMA, Trend/SR
+├── donchian_strategy.py  # daily Donchian breakout strategy + persisted state
+├── donchian_runner.py    # Donchian EOD-scan → next-open loop (restart-safe handoff)
+├── executor.py           # signal → risk check → order + broker-side trailing stop
+├── backtest.py           # ORB / Donchian / EMA / Trend-SR backtests with costs
+├── alerts.py             # optional Telegram alerts
+├── api/                  # FastAPI app
+│   ├── main.py           # app + routers; relaunches bots on startup
+│   ├── bot_manager.py    # one subprocess per profile (start/stop/status/relaunch)
+│   ├── deps.py           # per-profile cached TradingClient
+│   └── routers/          # account, positions, bot, config, kill, ws, bars, backtest, profiles
+├── ui/                   # React + Vite + TypeScript dashboard (lightweight-charts)
+├── profiles/             # gitignored per-profile YAML + active.txt
+├── memory/               # persisted strategy/handoff state + backtest reports
+├── logs/                 # per-profile JSONL logs + KILL files (runtime)
+├── tests/                # pytest suite
+└── setup.sh              # Ubuntu provision/update + systemd service
 ```
 
 ---
@@ -198,10 +206,15 @@ F:\Claude-trading\
 
 | Guarantee | How |
 |-----------|-----|
-| Paper mode by default | `TradingClient(paper=True)` unless `live: true` in config |
-| Live confirmation | Prints prompt requiring you to type `YES` |
-| No orders while disconnected | `feed.connected` checked before processing each bar |
-| Kill switch | Polls for `KILL` file every event-loop tick |
-| Daily loss halt | Flattens and stops immediately when limit is hit |
-| Market hours only | Bars outside 09:30–16:00 ET are discarded |
-| Decimal arithmetic | All prices and quantities use `decimal.Decimal`, never `float` |
+| Paper mode by default | `TradingClient(paper=True)` unless `live: true` in the profile |
+| Live confirmation | Broker refuses live trading until you type the confirmation |
+| Per-account isolation | Each profile has its own keys, logs, state files, and kill switch |
+| Kill switch | Per-profile `KILL` file polled continuously; UI Kill / Kill-all |
+| Daily loss halt | Flattens and stops when the daily P&L (incl. unrealized) hits the limit |
+| Exposure caps | Risk manager caps pending orders and aggregate exposure to equity |
+| Market hours (equities) | Bars outside 09:30–16:00 ET are discarded; crypto trades 24/7 |
+| Restart-safe Donchian | Persisted handoff + broker reconciliation so a restart can't orphan, duplicate, or strand a position; stops re-anchor to the real fill |
+| Stale-data guard | Donchian skips the scan on a stale daily bar instead of trading yesterday |
+| Bot supervision | API relaunches bots that were running before it restarted |
+| Decimal arithmetic | Prices and quantities use `decimal.Decimal`, never `float` |
+```
