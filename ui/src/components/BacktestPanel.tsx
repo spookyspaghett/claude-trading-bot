@@ -237,7 +237,7 @@ export default function BacktestPanel() {
   return (
     <div className="space-y-4">
       {/* ── Controls ──────────────────────────────────────────────────────── */}
-      <div className="bg-slate-900 rounded-xl border border-slate-700 p-4 space-y-4">
+      <div className="card p-4 space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <h2 className="text-sm font-semibold text-slate-200">Backtest</h2>
           <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
@@ -596,7 +596,7 @@ export default function BacktestPanel() {
       </div>
 
       {loading && (
-        <div className="bg-slate-900 rounded-xl border border-slate-700 p-10 text-center text-slate-500 text-sm animate-pulse">
+        <div className="card p-10 text-center text-slate-500 text-sm animate-pulse">
           Running strategy…
         </div>
       )}
@@ -675,7 +675,7 @@ export default function BacktestPanel() {
           </div>
 
           {/* ── Equity curve + drawdown overlay ───────────────────────────── */}
-          <div className="bg-slate-900 rounded-xl border border-slate-700 p-4">
+          <div className="card p-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-semibold text-slate-200">Equity Curve</h3>
               <span className="text-xs text-slate-500">Starting {fmtUsd(startingEquity)}</span>
@@ -737,7 +737,7 @@ export default function BacktestPanel() {
 
           {/* ── Per-trade P&L bar chart ────────────────────────────────────── */}
           {tradeBarData.length > 0 && (
-            <div className="bg-slate-900 rounded-xl border border-slate-700 p-4">
+            <div className="card p-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-slate-200">Trade P&amp;L — per trade</h3>
                 <span className="text-xs text-slate-500">{tradeBarData.length} trades</span>
@@ -772,7 +772,7 @@ export default function BacktestPanel() {
           )}
 
           {/* ── Trade log ─────────────────────────────────────────────────── */}
-          <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="card overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-200">Trade Log</h3>
               <span className="text-xs text-slate-500">{result.trades.length} trades</span>

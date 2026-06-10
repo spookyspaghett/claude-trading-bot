@@ -45,15 +45,18 @@ export default function StatusBar({ botStatus, wsConnected, account }: Props) {
         <Badge label={botStatus.running ? 'Bot Running' : 'Bot Stopped'} active={botStatus.running} color="bg-green-500" />
       )}
       <Badge label={wsConnected ? 'Feed Live' : 'Feed Offline'} active={wsConnected} color="bg-blue-500" />
-      <span className="text-xs text-slate-500">|</span>
-      <span className="text-xs text-slate-400">Equity: <span className="text-slate-200 font-medium">{equity}</span></span>
-      <span className="text-xs text-slate-400">
-        Daily P&amp;L:{' '}
-        <span className={`font-semibold ${pnlColor(dailyPnl)}`}>
+      <span className="w-px h-6 bg-slate-700/70" />
+      <div className="flex flex-col leading-tight">
+        <span className="text-[9px] uppercase tracking-widest text-slate-500">Equity</span>
+        <span className="text-sm font-bold text-slate-100 tabular-nums">{equity}</span>
+      </div>
+      <div className="flex flex-col leading-tight">
+        <span className="text-[9px] uppercase tracking-widest text-slate-500">Daily P&amp;L</span>
+        <span className={`text-sm font-bold tabular-nums ${pnlColor(dailyPnl)}`}>
           {parseFloat(dailyPnl) >= 0 ? '+' : ''}
           {parseFloat(dailyPnl).toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
         </span>
-      </span>
+      </div>
       {botStatus.pid && (
         <span className="text-xs text-slate-600">pid {botStatus.pid}</span>
       )}

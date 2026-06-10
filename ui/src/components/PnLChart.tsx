@@ -9,6 +9,7 @@ import {
   ReferenceLine,
   CartesianGrid,
 } from 'recharts'
+import { Activity } from 'lucide-react'
 import type { PnLPoint } from '../types'
 
 interface Props {
@@ -44,10 +45,13 @@ export default function PnLChart({ data }: Props) {
   }))
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700 flex flex-col">
+    <div className="card flex flex-col">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-slate-200">Intraday P&amp;L</h2>
+          <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <Activity size={14} className="text-emerald-400" />
+            Intraday P&amp;L
+          </h2>
           {data.length > 0 && (
             <p className="text-xs text-slate-500 mt-0.5">
               High {formatUsd(maxPnL)} · Low {formatUsd(minPnL)}

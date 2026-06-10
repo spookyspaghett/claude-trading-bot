@@ -1,3 +1,4 @@
+import { Briefcase, Inbox } from 'lucide-react'
 import type { Position } from '../types'
 
 interface Props {
@@ -19,15 +20,25 @@ function plClass(val: string) {
 }
 
 export default function PositionsTable({ positions }: Props) {
+  const totalPl = positions.reduce((sum, p) => sum + (parseFloat(p.unrealized_pl) || 0), 0)
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden flex flex-col">
+    <div className="card overflow-hidden flex flex-col">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-200">Open Positions</h2>
-        <span className="text-xs text-slate-500">{positions.length} position{positions.length !== 1 ? 's' : ''}</span>
+        <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+          <Briefcase size={14} className="text-sky-400" />
+          Open Positions
+          <span className="text-xs font-normal text-slate-500">({positions.length})</span>
+        </h2>
+        {positions.length > 0 && (
+          <span className={`text-sm font-bold tabular-nums ${plClass(String(totalPl))}`}>
+            {totalPl >= 0 ? '+' : ''}{totalPl.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+          </span>
+        )}
       </div>
 
       {positions.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-slate-600 text-sm py-10">
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-slate-600 text-sm py-10">
+          <Inbox size={22} className="text-slate-700" />
           No open positions
         </div>
       ) : (

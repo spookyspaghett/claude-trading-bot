@@ -151,7 +151,7 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
   const mode = cfg.strategy.name
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700">
+    <div className="card">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-2 flex-wrap">
         <div>
           <h2 className="text-sm font-semibold text-slate-200">Configuration</h2>

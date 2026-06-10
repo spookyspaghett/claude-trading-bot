@@ -4,15 +4,52 @@
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-100 antialiased;
+    @apply bg-slate-950 text-slate-100 antialiased min-h-screen;
+    /* Subtle depth: cool glow top-left, faint violet right, on near-black */
+    background-image:
+      radial-gradient(ellipse 80% 50% at 15% -10%, rgb(59 130 246 / 0.13), transparent 60%),
+      radial-gradient(ellipse 60% 40% at 90% 0%, rgb(139 92 246 / 0.08), transparent 55%);
+    background-attachment: fixed;
+  }
+  /* Keep figures aligned in tables and stat readouts */
+  table, .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  ::selection {
+    @apply bg-blue-500/30;
   }
   ::-webkit-scrollbar {
-    @apply w-1.5;
+    @apply w-1.5 h-1.5;
   }
   ::-webkit-scrollbar-track {
-    @apply bg-slate-900;
+    @apply bg-transparent;
   }
   ::-webkit-scrollbar-thumb {
-    @apply bg-slate-600 rounded-full;
+    @apply bg-slate-700 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-600;
+  }
+}
+
+@layer components {
+  /* Shared panel/card chrome: slightly glassy, top edge highlight, soft shadow */
+  .card {
+    @apply rounded-xl border border-slate-700/70 bg-slate-900/70 backdrop-blur-sm
+           shadow-lg shadow-black/30 transition-colors duration-200;
+    background-image: linear-gradient(to bottom, rgb(255 255 255 / 0.035), transparent 64px);
+  }
+  .card:hover {
+    @apply border-slate-600/80;
+  }
+}
+
+@layer utilities {
+  .animate-fade-up {
+    animation: fade-up 0.35s ease-out both;
+  }
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 }

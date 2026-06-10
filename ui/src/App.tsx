@@ -5,6 +5,7 @@ import BacktestPanel from './components/BacktestPanel'
 import ProfilesPanel from './components/ProfilesPanel'
 import ProfileDashboard from './components/ProfileDashboard'
 import ErrorBoundary from './components/ErrorBoundary'
+import MarketStatus from './components/MarketStatus'
 import type { BotStatusMap, ProfileSummary } from './types'
 
 // Selected view: a profile slug, or one of the global tabs.
@@ -50,12 +51,17 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="bg-slate-900 border-b border-slate-700 px-4 py-2">
+      <header className="sticky top-0 z-40 bg-slate-950/80 backdrop-blur-md border-b border-slate-800 px-4 py-2 shadow-lg shadow-black/20">
         <div className="max-w-screen-2xl mx-auto flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2">
-            <TrendingUp size={18} className="text-blue-400 shrink-0" />
-            <span className="font-bold text-slate-100 text-sm tracking-tight whitespace-nowrap">Claude Trading</span>
+            <span className="grid place-items-center w-7 h-7 rounded-lg bg-gradient-to-br from-blue-500 to-violet-600 shadow-md shadow-blue-900/50 shrink-0">
+              <TrendingUp size={15} className="text-white" />
+            </span>
+            <span className="font-extrabold text-sm tracking-tight whitespace-nowrap bg-gradient-to-r from-slate-50 to-slate-400 bg-clip-text text-transparent">
+              Claude Trading
+            </span>
           </div>
+          <MarketStatus />
 
           {/* Profile tabs + global tabs */}
           <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 flex-wrap">

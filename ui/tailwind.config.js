@@ -6,6 +6,9 @@ export default {
       colors: {
         brand: '#3b82f6',
       },
+      fontFamily: {
+        sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+      },
     },
   },
   plugins: [],

@@ -31,7 +31,7 @@ export default function DonchianPanel({ slug }: Props) {
   const hasQueue = entries.length > 0 || exits.length > 0
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700 flex flex-col overflow-hidden">
+    <div className="card flex flex-col overflow-hidden">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
           <Moon size={14} className="text-indigo-400" />

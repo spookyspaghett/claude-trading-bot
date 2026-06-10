@@ -271,7 +271,7 @@ export default function ProfilesPanel({ runningSlugs, onActivated }: Props) {
 
       {/* ── Create / edit form ────────────────────────────────────────────── */}
       {form && (
-        <div className="bg-slate-900 rounded-xl border border-slate-700 p-4 space-y-4 max-w-2xl">
+        <div className="card p-4 space-y-4 max-w-2xl">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-200">
               {form.slug ? `Edit “${form.name}”` : 'New profile'}

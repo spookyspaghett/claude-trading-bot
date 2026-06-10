@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { CandlestickChart } from 'lucide-react'
 import {
   createChart, ColorType, type IChartApi, type ISeriesApi,
   type CandlestickData, type LineData, type SeriesMarker, type IPriceLine, type UTCTimestamp,
@@ -171,10 +172,13 @@ export default function PriceChart({ slug, symbols }: Props) {
   const ind = data?.indicators
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700 flex flex-col overflow-hidden lg:col-span-2">
+    <div className="card flex flex-col overflow-hidden lg:col-span-2">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold text-slate-200">Price</h2>
+          <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <CandlestickChart size={14} className="text-amber-400" />
+            Price
+          </h2>
           <select value={symbol} onChange={e => setSymbol(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500">
             {symbols.map(s => <option key={s} value={s}>{s}</option>)}

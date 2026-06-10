@@ -8,6 +8,7 @@ import {
   CartesianGrid,
   ReferenceLine,
 } from 'recharts'
+import { Wallet } from 'lucide-react'
 import type { EquityPoint } from '../types'
 
 interface Props {
@@ -31,10 +32,13 @@ export default function EquityChart({ data }: Props) {
   const color      = isUp ? '#4ade80' : '#f87171'
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700 flex flex-col">
+    <div className="card flex flex-col">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-slate-200">Account Equity (30d)</h2>
+          <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
+            <Wallet size={14} className="text-violet-400" />
+            Account Equity (30d)
+          </h2>
           {data.length > 0 && (
             <p className="text-xs text-slate-500 mt-0.5">
               Start {formatUsd(first)} · {data.length} days

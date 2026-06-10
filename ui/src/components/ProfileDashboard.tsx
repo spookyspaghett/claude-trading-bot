@@ -47,9 +47,9 @@ export default function ProfileDashboard({ slug, name, assetClass, symbols, stra
   const crypto = assetClass === 'crypto'
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 animate-fade-up">
       {/* Per-profile header: identity + status + controls */}
-      <div className="bg-slate-900 rounded-xl border border-slate-700 px-4 py-3 flex items-center gap-3 flex-wrap">
+      <div className="card px-4 py-3 flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded border ${
             crypto ? 'text-amber-300 bg-amber-950 border-amber-800' : 'text-sky-300 bg-sky-950 border-sky-800'
