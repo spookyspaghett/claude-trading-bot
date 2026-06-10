@@ -36,7 +36,14 @@ export default function StatusBar({ botStatus, wsConnected, account }: Props) {
 
   return (
     <div className="flex items-center gap-3 flex-wrap">
-      <Badge label={botStatus.running ? 'Bot Running' : 'Bot Stopped'} active={botStatus.running} color="bg-green-500" />
+      {botStatus.stopped_unexpectedly && !botStatus.running ? (
+        <span className="flex items-center text-xs font-medium text-amber-300 bg-amber-950 border border-amber-800 px-2.5 py-1 rounded-full">
+          <span className="inline-block w-2 h-2 rounded-full mr-1.5 bg-amber-400 animate-pulse" />
+          Bot Died — check crash log
+        </span>
+      ) : (
+        <Badge label={botStatus.running ? 'Bot Running' : 'Bot Stopped'} active={botStatus.running} color="bg-green-500" />
+      )}
       <Badge label={wsConnected ? 'Feed Live' : 'Feed Offline'} active={wsConnected} color="bg-blue-500" />
       <span className="text-xs text-slate-500">|</span>
       <span className="text-xs text-slate-400">Equity: <span className="text-slate-200 font-medium">{equity}</span></span>

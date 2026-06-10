@@ -12,9 +12,13 @@ async def bot_status(profile: str | None = None) -> dict[str, object]:
     """Without a profile: a map of {slug: {running, pid}} for every launched bot.
     With a profile: that single bot's status."""
     if profile:
+        running = bot_manager.is_running(profile)
+        desired = profile in bot_manager._load_desired()
         return {
-            "running": bot_manager.is_running(profile),
+            "running": running,
             "pid": bot_manager.get_pid(profile),
+            "desired": desired,
+            "stopped_unexpectedly": desired and not running,
         }
     return {"bots": bot_manager.status_map()}
 

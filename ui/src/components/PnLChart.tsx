@@ -28,14 +28,16 @@ function formatUsd(val: number) {
 }
 
 export default function PnLChart({ data }: Props) {
-  const lastPnL   = data.length ? data[data.length - 1].profit_loss : 0
-  const maxPnL    = data.length ? Math.max(...data.map(d => d.profit_loss)) : 0
-  const minPnL    = data.length ? Math.min(...data.map(d => d.profit_loss)) : 0
+  // Alpaca can return null P&L points early in a fresh session — treat as 0.
+  const safe      = data.map(d => ({ ...d, profit_loss: d.profit_loss ?? 0 }))
+  const lastPnL   = safe.length ? safe[safe.length - 1].profit_loss : 0
+  const maxPnL    = safe.length ? Math.max(...safe.map(d => d.profit_loss)) : 0
+  const minPnL    = safe.length ? Math.min(...safe.map(d => d.profit_loss)) : 0
   const isUp      = lastPnL >= 0
   const lineColor = isUp ? '#4ade80' : '#f87171'
 
   // Split data into positive and negative areas for two-color fill at zero
-  const chartData = data.map(d => ({
+  const chartData = safe.map(d => ({
     ...d,
     pos: d.profit_loss > 0 ? d.profit_loss : 0,
     neg: d.profit_loss < 0 ? d.profit_loss : 0,

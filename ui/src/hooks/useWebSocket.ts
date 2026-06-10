@@ -18,11 +18,17 @@ export function useWebSocket(path: string): { events: LogEvent[]; connected: boo
       const ws = new WebSocket(url)
       wsRef.current = ws
 
-      ws.onopen = () => setConnected(true)
+      ws.onopen = () => {
+        setConnected(true)
+        // The server replays today's full backlog on every connect — reset so
+        // reconnects (and day rollovers) don't fill the feed with duplicates.
+        setEvents([])
+      }
 
       ws.onmessage = (e: MessageEvent<string>) => {
         try {
           const evt = JSON.parse(e.data) as LogEvent
+          if (!evt || typeof evt !== 'object' || typeof evt.event !== 'string') return
           setEvents(prev => [evt, ...prev].slice(0, MAX_EVENTS))
         } catch {
           // ignore malformed lines

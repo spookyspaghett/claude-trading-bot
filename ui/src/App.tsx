@@ -4,6 +4,7 @@ import { usePolling, apiPost } from './hooks/useApi'
 import BacktestPanel from './components/BacktestPanel'
 import ProfilesPanel from './components/ProfilesPanel'
 import ProfileDashboard from './components/ProfileDashboard'
+import ErrorBoundary from './components/ErrorBoundary'
 import type { BotStatusMap, ProfileSummary } from './types'
 
 // Selected view: a profile slug, or one of the global tabs.
@@ -59,7 +60,9 @@ export default function App() {
           {/* Profile tabs + global tabs */}
           <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 flex-wrap">
             {profiles.map(p => {
-              const running = status.bots[p.slug]?.running ?? false
+              const bot = status.bots[p.slug]
+              const running = bot?.running ?? false
+              const died = bot?.stopped_unexpectedly ?? false
               const isSel = selectedSlug === p.slug
               return (
                 <button key={p.slug}
@@ -67,9 +70,11 @@ export default function App() {
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
                     isSel ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
                   }`}
-                  title={running ? 'Bot running' : 'Bot stopped'}
+                  title={running ? 'Bot running' : died ? 'Bot died unexpectedly — check crash log' : 'Bot stopped'}
                 >
-                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${running ? 'bg-green-400' : 'bg-slate-600'}`} />
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                    running ? 'bg-green-400' : died ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'
+                  }`} />
                   {p.asset_class === 'crypto' ? <Coins size={12} /> : <LineChart size={12} />}
                   {p.name}
                 </button>
@@ -113,14 +118,17 @@ export default function App() {
 
       <main className="flex-1 p-4 max-w-screen-2xl mx-auto w-full">
         {view.kind === 'profile' && selectedProfile && (
-          <ProfileDashboard
-            key={selectedProfile.slug}
-            slug={selectedProfile.slug}
-            name={selectedProfile.name}
-            assetClass={selectedProfile.asset_class}
-            symbols={selectedProfile.symbols}
-            onStatusChange={refreshStatus}
-          />
+          <ErrorBoundary label={`${selectedProfile.name} dashboard`}>
+            <ProfileDashboard
+              key={selectedProfile.slug}
+              slug={selectedProfile.slug}
+              name={selectedProfile.name}
+              assetClass={selectedProfile.asset_class}
+              symbols={selectedProfile.symbols}
+              strategy={selectedProfile.strategy}
+              onStatusChange={refreshStatus}
+            />
+          </ErrorBoundary>
         )}
         {view.kind === 'profile' && !selectedProfile && (
           <p className="text-slate-500 text-sm">Profile not found — pick another tab.</p>

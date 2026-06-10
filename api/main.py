@@ -10,6 +10,7 @@ from api import bot_manager
 from api.routers import account, bot, config_router, kill, logs, positions
 from api.routers.backtest_router import router as backtest_router
 from api.routers.bars_router import router as bars_router
+from api.routers.donchian_router import router as donchian_router
 from api.routers.profiles_router import router as profiles_router
 from api.routers.ws import router as ws_router
 
@@ -41,6 +42,7 @@ app.include_router(kill.router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")
 app.include_router(bars_router, prefix="/api")
+app.include_router(donchian_router, prefix="/api")
 
 # ── Serve built React UI (production) ────────────────────────────────────────
 _dist = Path(__file__).parent.parent / "ui" / "dist"

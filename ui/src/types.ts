@@ -20,6 +20,31 @@ export interface Account {
 export interface BotStatus {
   running: boolean
   pid: number | null
+  desired?: boolean
+  stopped_unexpectedly?: boolean
+}
+
+export interface DonchianPosition {
+  symbol: string
+  direction: string
+  entry_price: number
+  entry_date: string
+  stop_price: number
+  channel_low: number
+  channel_high: number
+  trailing_active: boolean
+  qty: number
+  pending_exit: boolean
+}
+
+export interface DonchianState {
+  positions: DonchianPosition[]
+  queued_entries: Record<string, string>
+  queued_exits: string[]
+  queued_date: string
+  pending_reanchor: string[]
+  ran_eod_date: string
+  ran_open_date: string
 }
 
 export interface BotStatusMap {

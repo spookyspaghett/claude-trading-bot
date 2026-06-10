@@ -10,6 +10,8 @@ import EquityChart from './EquityChart'
 import SignalFeed from './SignalFeed'
 import ConfigEditor from './ConfigEditor'
 import PriceChart from './PriceChart'
+import DonchianPanel from './DonchianPanel'
+import ErrorBoundary from './ErrorBoundary'
 import type { Account, AssetClass, BotStatus, EquityPoint, PnLPoint, Position } from '../types'
 
 interface Props {
@@ -17,13 +19,14 @@ interface Props {
   name: string
   assetClass: AssetClass
   symbols: string[]
+  strategy: string
   onStatusChange: () => void
 }
 
 const DEFAULT_STATUS: BotStatus = { running: false, pid: null }
 const DEFAULT_ACCOUNT: Account = { equity: '0', portfolio_value: '0', buying_power: '0', cash: '0', daily_pnl: '0' }
 
-export default function ProfileDashboard({ slug, name, assetClass, symbols, onStatusChange }: Props) {
+export default function ProfileDashboard({ slug, name, assetClass, symbols, strategy, onStatusChange }: Props) {
   const q = `?profile=${encodeURIComponent(slug)}`
 
   const { events, connected: wsConnected } = useWebSocket(`/api/ws/logs${q}`)
@@ -65,13 +68,18 @@ export default function ProfileDashboard({ slug, name, assetClass, symbols, onSt
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {symbols.length > 0 && <PriceChart slug={slug} symbols={symbols} />}
-        <PositionsTable positions={positions} />
-        <PnLChart data={pnlData} />
-        <SignalFeed events={events} wsConnected={wsConnected} />
-        <EquityChart data={equityHistory} />
+        {symbols.length > 0 && (
+          <ErrorBoundary label="Price chart"><PriceChart slug={slug} symbols={symbols} /></ErrorBoundary>
+        )}
+        {strategy === 'donchian' && (
+          <ErrorBoundary label="Donchian panel"><DonchianPanel slug={slug} /></ErrorBoundary>
+        )}
+        <ErrorBoundary label="Positions"><PositionsTable positions={positions} /></ErrorBoundary>
+        <ErrorBoundary label="Intraday P&L"><PnLChart data={pnlData} /></ErrorBoundary>
+        <ErrorBoundary label="Live feed"><SignalFeed events={events} wsConnected={wsConnected} /></ErrorBoundary>
+        <ErrorBoundary label="Equity chart"><EquityChart data={equityHistory} /></ErrorBoundary>
         <div className="lg:col-span-2">
-          <ConfigEditor onRestart={handleStatusChange} slug={slug} />
+          <ErrorBoundary label="Config editor"><ConfigEditor onRestart={handleStatusChange} slug={slug} /></ErrorBoundary>
         </div>
       </div>
     </div>
