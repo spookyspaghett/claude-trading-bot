@@ -141,6 +141,7 @@ async def run_backtest_upload(
     adx_period: int = Form(14),
     volume_mult: float = Form(0.0),
     volume_ma: int = Form(20),
+    exit_lookback: int = Form(0),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -184,7 +185,7 @@ async def run_backtest_upload(
             trailing_activation_pct=max(0.0, trailing_activation_pct),
             trailing_pct=max(0.0, trailing_pct),
             starting_equity=Decimal(str(max(100.0, starting_equity))),
-            strategy=strategy if strategy in ("auto", "trend_sr", "ema") else "auto",
+            strategy=strategy if strategy in ("auto", "trend_sr", "ema", "vwap_revert") else "auto",
             ma_fast=max(2, ma_fast),
             ma_slow=max(3, ma_slow),
             pivot_lookback=max(2, pivot_lookback),
@@ -195,6 +196,7 @@ async def run_backtest_upload(
             volume_ma=max(2, volume_ma),
             slippage_bps=max(0.0, slippage_bps),
             commission=max(0.0, commission),
+            exit_lookback=max(0, exit_lookback),
         )
 
         payload = _result_to_dict(result)

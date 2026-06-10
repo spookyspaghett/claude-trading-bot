@@ -51,10 +51,15 @@ class DonchianLiveStrategy:
         trailing_activation_pct: float = 1.0,
         trailing_pct: float = 8.0,
         long_only: bool = True,
+        exit_lookback: int = 0,
         slug: str | None = None,
     ) -> None:
         self.lookback = lookback_days
         self.trend_ma = trend_ma
+        # Turtle-style asymmetric exit: leave on a break of this SHORTER channel
+        # (e.g. 40-day in / 20-day out) so winners aren't held all the way back
+        # to a 40-day low. 0 = exit on the entry channel (legacy).
+        self.exit_lookback = exit_lookback if 0 < exit_lookback < lookback_days else 0
         self._trailing_act = trailing_activation_pct / 100.0
         self._trailing_pct = trailing_pct / 100.0
         self.long_only = long_only
@@ -116,6 +121,14 @@ class DonchianLiveStrategy:
         ch_high = max(window_highs)
         ch_low  = min(window_lows)
 
+        # Exit channel: shorter lookback when configured (Turtle-style), else
+        # the entry channel itself.
+        if self.exit_lookback > 0:
+            ex_high = max(highs[-self.exit_lookback - 1: -1])
+            ex_low  = min(lows[-self.exit_lookback - 1: -1])
+        else:
+            ex_high, ex_low = ch_high, ch_low
+
         # Slow trend MA filter (e.g. 200-day)
         if self.trend_ma > 0 and len(closes) >= self.trend_ma + 1:
             ma = sum(closes[-self.trend_ma - 1: -1]) / self.trend_ma
@@ -161,10 +174,10 @@ class DonchianLiveStrategy:
                     new_stop = round(pos.peak_price * (1.0 + self._trailing_pct), 2)
                     pos.stop_price = min(pos.stop_price, new_stop)
 
-            # Channel reverse exit
+            # Channel reverse exit (on the exit channel — shorter when configured)
             channel_exit = (
-                pos.direction == "BUY"  and today_close < ch_low
-                or pos.direction == "SELL" and today_close > ch_high
+                pos.direction == "BUY"  and today_close < ex_low
+                or pos.direction == "SELL" and today_close > ex_high
             )
             if channel_exit:
                 # Flag for exit but KEEP the position persisted until the close

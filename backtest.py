@@ -339,6 +339,7 @@ def _run_with_daily_bars(
     volume_filter_days: int = 0,
     trailing_activation_pct: float = 1.0,
     trailing_pct: float = 8.0,
+    exit_lookback: int = 0,
     starting_equity: Decimal = Decimal("500000"),
     costs: Costs | None = None,
 ) -> BacktestResult:
@@ -348,9 +349,12 @@ def _run_with_daily_bars(
              close breaks below N-day low   → SELL short  (skipped if long_only=True)
     Filters: trend_ma (slow MA, e.g. 200d), fast_ma (e.g. 50d), volume confirmation
     Stop   : ATR-based (atr_period × atr_multiplier) or fixed % fallback
-    Exit   : initial/trailing stop, channel reverse, or end of data
+    Exit   : initial/trailing stop, channel reverse, or end of data.
+             exit_lookback > 0 uses a SHORTER channel for the reverse exit
+             (Turtle-style, matches the live strategy's exit_lookback).
     Trailing: activates after `trailing_activation_pct`% gain; trails at `trailing_pct`%
     """
+    exit_lb = exit_lookback if 0 < exit_lookback < lookback else 0
     warmup = max(
         lookback,
         trend_ma if trend_ma > 0 else 0,
@@ -397,6 +401,14 @@ def _run_with_daily_bars(
 
         ch_high = Decimal(str(max(b.high for b in window)))
         ch_low  = Decimal(str(min(b.low  for b in window)))
+
+        # Exit channel: shorter lookback when configured, else the entry channel.
+        if exit_lb > 0:
+            ex_window = bars[i - exit_lb: i]
+            ex_high = Decimal(str(max(b.high for b in ex_window)))
+            ex_low  = Decimal(str(min(b.low  for b in ex_window)))
+        else:
+            ex_high, ex_low = ch_high, ch_low
 
         # ── Slow trend MA filter (e.g. 200-day) ──────────────────────────────
         if trend_ma > 0:
@@ -482,8 +494,8 @@ def _run_with_daily_bars(
         # ── 3. Check reverse / channel exit ──────────────────────────────────
         if open_trade is not None:
             reverse = (
-                open_trade.direction == "BUY"  and bar_close < ch_low
-                or open_trade.direction == "SELL" and bar_close > ch_high
+                open_trade.direction == "BUY"  and bar_close < ex_low
+                or open_trade.direction == "SELL" and bar_close > ex_high
             )
             if reverse:
                 pnl = (
@@ -713,6 +725,99 @@ def _run_with_trend_sr(
         symbol=symbol, start_date=str(start), end_date=str(end),
         trades=trades, equity_curve=equity_curve,
         stats=_compute_stats(trades, equity_curve), strategy_used=name,
+    )
+
+
+def _run_with_vwap(
+    symbol: str,
+    bars: list[BacktestBar],
+    start: date,
+    end: date,
+    risk_config: RiskConfig,
+    *,
+    long_only: bool = True,
+    starting_equity: Decimal = Decimal("500000"),
+    costs: Costs | None = None,
+) -> BacktestResult:
+    """Replay the session-VWAP mean-reversion strategy over 1-minute bars.
+
+    The strategy decides entries/exits itself (BUY/SELL/FLAT with stop fills
+    priced in the signal); this translates them into P&L with costs applied.
+    """
+    from config_loader import VwapConfig
+    from strategy import Direction, VWAPRevertStrategy
+
+    costs = costs or Costs()
+    bars = sorted(bars, key=lambda b: b.timestamp)
+    is_crypto = "/" in symbol
+    cfg = VwapConfig(long_only=long_only)
+    strat = VWAPRevertStrategy(cfg, [symbol], trade_24_7=is_crypto)
+    risk = RiskManager(
+        max_position_usd=risk_config.max_position_usd,
+        stop_loss_pct=risk_config.stop_loss_pct,
+        daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
+        max_open_positions=risk_config.max_open_positions,
+    )
+
+    trades: list[Trade] = []
+    equity = starting_equity
+    equity_curve: list[dict[str, object]] = []
+    open_trade: Trade | None = None
+
+    for bar in bars:
+        bar_et = _to_et(bar.timestamp)
+        sig = strat.on_bar(bar)  # type: ignore[arg-type]
+        direction = sig.direction if sig is not None else None
+
+        if direction in (Direction.BUY, Direction.SELL) and open_trade is None:
+            assert sig is not None
+            qty = risk.compute_qty(sig.entry_price, fractional=is_crypto)
+            if qty > Decimal("0"):
+                is_buy = sig.direction == Direction.BUY
+                open_trade = Trade(
+                    symbol=symbol, direction=sig.direction.value,
+                    entry_time=bar_et, entry_price=costs.fill(sig.entry_price, is_buy=is_buy),
+                    stop_price=sig.stop_price, qty=qty,
+                )
+        elif direction == Direction.FLAT and open_trade is not None:
+            assert sig is not None
+            exit_px = costs.fill(sig.entry_price, is_buy=open_trade.direction != "BUY")
+            pnl = (
+                (exit_px - open_trade.entry_price) * open_trade.qty
+                if open_trade.direction == "BUY"
+                else (open_trade.entry_price - exit_px) * open_trade.qty
+            ) - costs.round_trip
+            open_trade.exit_time = bar_et
+            open_trade.exit_price = exit_px
+            open_trade.exit_reason = sig.reason
+            open_trade.pnl = pnl
+            equity += pnl
+            trades.append(open_trade)
+            open_trade = None
+
+        equity_curve.append({"timestamp": int(bar_et.timestamp()), "equity": float(equity)})
+
+    if open_trade is not None:
+        last = bars[-1]
+        exit_px = costs.fill(Decimal(str(last.close)), is_buy=open_trade.direction != "BUY")
+        pnl = (
+            (exit_px - open_trade.entry_price) * open_trade.qty
+            if open_trade.direction == "BUY"
+            else (open_trade.entry_price - exit_px) * open_trade.qty
+        ) - costs.round_trip
+        open_trade.exit_time = _to_et(last.timestamp)
+        open_trade.exit_price = exit_px
+        open_trade.exit_reason = "end"
+        open_trade.pnl = pnl
+        equity += pnl
+        trades.append(open_trade)
+
+    return BacktestResult(
+        symbol=symbol, start_date=str(start), end_date=str(end),
+        trades=trades, equity_curve=equity_curve,
+        stats=_compute_stats(trades, equity_curve),
+        strategy_used=(f"VWAP mean reversion ({cfg.band_mult}σ entry, "
+                       f"{cfg.stop_mult}σ stop{', long only' if long_only else ''})"),
     )
 
 
@@ -1095,6 +1200,7 @@ def _run_sync_from_bars(
     volume_mult: float = 0.0,
     volume_ma: int = 20,
     costs: Costs | None = None,
+    exit_lookback: int = 0,
 ) -> BacktestResult:
     if not bars:
         raise ValueError("No bars provided.")
@@ -1121,6 +1227,12 @@ def _run_sync_from_bars(
             fast_period=ma_fast, slow_period=ma_slow,
             starting_equity=starting_equity, costs=costs,
         )
+    if strategy == "vwap_revert":
+        return _run_with_vwap(
+            symbol, bars, start, end, risk_config,
+            long_only=long_only,
+            starting_equity=starting_equity, costs=costs,
+        )
 
     if _is_daily_data(bars):
         return _run_with_daily_bars(
@@ -1129,6 +1241,7 @@ def _run_sync_from_bars(
             fast_ma=fast_ma, atr_period=atr_period, atr_multiplier=atr_multiplier,
             use_atr_stop=use_atr_stop, volume_filter_days=volume_filter_days,
             trailing_activation_pct=trailing_activation_pct, trailing_pct=trailing_pct,
+            exit_lookback=exit_lookback,
             starting_equity=starting_equity, costs=costs,
         )
     else:
@@ -1265,6 +1378,7 @@ async def run_backtest_from_file(
     volume_ma: int = 20,
     slippage_bps: float = 0.0,
     commission: float = 0.0,
+    exit_lookback: int = 0,
 ) -> BacktestResult:
     return await asyncio.to_thread(
         _run_sync_from_bars, symbol, bars, orb_config, risk_config,
@@ -1273,4 +1387,5 @@ async def run_backtest_from_file(
         starting_equity, strategy, ma_fast, ma_slow, pivot_lookback, pivot_strength,
         min_adx, adx_period, volume_mult, volume_ma,
         Costs(slippage_bps=slippage_bps, commission=commission),
+        exit_lookback=exit_lookback,
     )

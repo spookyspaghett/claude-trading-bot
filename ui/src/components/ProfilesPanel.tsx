@@ -14,11 +14,13 @@ const STRATEGIES_BY_ASSET: Record<AssetClass, { id: string; label: string }[]> =
     { id: 'ema', label: 'EMA' },
     { id: 'donchian', label: 'Donchian' },
     { id: 'trend_sr', label: 'Trend/SR' },
+    { id: 'vwap_revert', label: 'VWAP Reversion' },
   ],
   crypto: [
     { id: 'trend_sr', label: 'Trend/SR (recommended)' },
     { id: 'ema', label: 'EMA' },
     { id: 'donchian', label: 'Donchian' },
+    { id: 'vwap_revert', label: 'VWAP Reversion' },
   ],
 }
 

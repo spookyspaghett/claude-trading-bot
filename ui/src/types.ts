@@ -90,6 +90,9 @@ export interface ConfigOrb {
   opening_range_minutes: number
   entry_order_type: string
   eod_exit_time: string
+  buffer_pct?: number
+  stop_mode?: string
+  max_range_pct?: number
 }
 
 export interface ConfigEma {
@@ -97,6 +100,7 @@ export interface ConfigEma {
   slow_period: number
   entry_order_type: string
   eod_exit_time: string
+  min_separation_pct?: number
 }
 
 export interface ConfigDonchian {
@@ -105,6 +109,17 @@ export interface ConfigDonchian {
   trailing_activation_pct: number
   trailing_pct: number
   long_only: boolean
+  exit_lookback?: number
+}
+
+export interface ConfigVwap {
+  band_mult: number
+  stop_mult: number
+  dev_window: number
+  min_bars: number
+  max_trades_per_day: number
+  long_only: boolean
+  eod_exit_time: string
 }
 
 export interface ConfigTrendSR {
@@ -140,6 +155,7 @@ export interface Config {
     ema: ConfigEma
     donchian: ConfigDonchian
     trend_sr: ConfigTrendSR
+    vwap_revert?: ConfigVwap
   }
 }
 

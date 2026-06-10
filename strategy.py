@@ -13,7 +13,7 @@ from alpaca.data.models import Bar
 from data import AggregatedBar
 
 if TYPE_CHECKING:
-    from config_loader import EmaConfig, OrbConfig, TrendSRConfig
+    from config_loader import EmaConfig, OrbConfig, TrendSRConfig, VwapConfig
 
 ET = ZoneInfo("America/New_York")
 MARKET_OPEN: time = time(9, 30)
@@ -77,6 +77,9 @@ class ORBStrategy(Strategy):
     ) -> None:
         self._orb_minutes = config.opening_range_minutes
         self._stop_loss_pct = stop_loss_pct
+        self._buffer_pct = Decimal(str(config.buffer_pct)) / Decimal("100")
+        self._stop_mode = config.stop_mode
+        self._max_range_pct = Decimal(str(config.max_range_pct))
         self._state: dict[str, _ORBState] = {s: _ORBState() for s in symbols}
         self._range_end: time = self._build_range_end_time()
 
@@ -139,13 +142,24 @@ class ORBStrategy(Strategy):
             if state.range_high == Decimal("0") or state.range_low == Decimal("Inf"):
                 return None  # no bars arrived during the opening range; skip
             state.range_complete = True
+            # Range-width filter: a huge opening range (news day) makes the
+            # breakout's R:R terrible — skip the whole day.
+            if self._max_range_pct > 0 and state.range_low > 0:
+                width_pct = (state.range_high - state.range_low) / state.range_low * 100
+                if width_pct > self._max_range_pct:
+                    state.long_triggered = True
+                    state.short_triggered = True
+                    return None
 
         close = Decimal(str(bar.close))
+        # Breakout buffer: a fraction of the range height the close must clear,
+        # filtering the classic 1-tick false breakout. 0 = legacy behaviour.
+        buffer = (state.range_high - state.range_low) * self._buffer_pct
 
         # ── Long breakout ─────────────────────────────────────────────────────
-        if close > state.range_high and not state.long_triggered:
+        if close > state.range_high + buffer and not state.long_triggered:
             state.long_triggered = True
-            stop = self._stop_price(close, Direction.BUY)
+            stop = self._stop_price(close, Direction.BUY, state)
             return Signal(
                 symbol=symbol,
                 direction=Direction.BUY,
@@ -155,9 +169,9 @@ class ORBStrategy(Strategy):
             )
 
         # ── Short breakdown ───────────────────────────────────────────────────
-        if close < state.range_low and not state.short_triggered:
+        if close < state.range_low - buffer and not state.short_triggered:
             state.short_triggered = True
-            stop = self._stop_price(close, Direction.SELL)
+            stop = self._stop_price(close, Direction.SELL, state)
             return Signal(
                 symbol=symbol,
                 direction=Direction.SELL,
@@ -168,11 +182,21 @@ class ORBStrategy(Strategy):
 
         return None
 
-    def _stop_price(self, price: Decimal, direction: Direction) -> Decimal:
+    def _stop_price(
+        self, price: Decimal, direction: Direction, state: _ORBState | None = None,
+    ) -> Decimal:
         factor = self._stop_loss_pct / Decimal("100")
         if direction == Direction.BUY:
-            return (price * (Decimal("1") - factor)).quantize(Decimal("0.01"))
-        return (price * (Decimal("1") + factor)).quantize(Decimal("0.01"))
+            pct_stop = (price * (Decimal("1") - factor)).quantize(Decimal("0.01"))
+            if self._stop_mode == "range" and state is not None:
+                # Opposite side of the range = natural invalidation level,
+                # but never risk more than the % stop allows.
+                return max(state.range_low.quantize(Decimal("0.01")), pct_stop)
+            return pct_stop
+        pct_stop = (price * (Decimal("1") + factor)).quantize(Decimal("0.01"))
+        if self._stop_mode == "range" and state is not None:
+            return min(state.range_high.quantize(Decimal("0.01")), pct_stop)
+        return pct_stop
 
     def reset_day(self) -> None:
         self._state = {s: _ORBState() for s in self._state}
@@ -216,6 +240,7 @@ class EMAStrategy(Strategy):
         self._fast_period = config.fast_period
         self._slow_period = config.slow_period
         self._stop_loss_pct = stop_loss_pct
+        self._min_sep = Decimal(str(config.min_separation_pct))
         self._trade_24_7 = trade_24_7
         # Need ~slow_period bars before the EMAs are meaningful (#8): don't trade
         # until warmed, so a cross can't fire on noise on the 2nd bar.
@@ -290,6 +315,18 @@ class EMAStrategy(Strategy):
         fast_above = self._step_ema(state, close)
         if fast_above is None:
             return None   # just seeded
+
+        # Hysteresis band: only register a cross once the fast EMA clears the
+        # slow by min_separation_pct — inside the band the previous state holds,
+        # killing the epsilon flip-flop churn of a flat tape. 0 = legacy.
+        if self._min_sep > 0 and state.slow_ema and state.fast_ema is not None:
+            sep = (state.fast_ema - state.slow_ema) / state.slow_ema * 100
+            if sep > self._min_sep:
+                fast_above = True
+            elif sep < -self._min_sep:
+                fast_above = False
+            else:
+                fast_above = state.fast_was_above if state.fast_was_above is not None else fast_above
 
         # Warmup gate: don't trade until the EMAs have enough history (#8).
         if state.count < self._warmup:
@@ -834,4 +871,200 @@ class TrendSRStrategy(Strategy):
 
     def reset_day(self) -> None:
         """No-op: Trend/SR is a multi-day swing strategy; state persists."""
+        return
+
+
+# ── VWAP mean-reversion strategy (intraday) ───────────────────────────────────
+
+@dataclass
+class _VwapState:
+    session: object = None              # ET date (stocks) / UTC date (24/7)
+    cum_pv: Decimal = field(default_factory=lambda: Decimal("0"))
+    cum_w: Decimal = field(default_factory=lambda: Decimal("0"))
+    devs: list[Decimal] = field(default_factory=list)   # close − VWAP history
+    position: str = ""                  # "" | "BUY" | "SELL"
+    entry_price: Decimal = field(default_factory=lambda: Decimal("0"))
+    stop_price: Decimal = field(default_factory=lambda: Decimal("0"))
+    trades_today: int = 0
+    eod_sent: bool = False
+
+
+class VWAPRevertStrategy(Strategy):
+    """Session-VWAP mean reversion — the counterpart to the breakout strategies.
+
+    All four existing strategies (ORB, EMA, Donchian, Trend/SR) are breakout /
+    trend-following: they churn losses in the same regime — range-bound chop.
+    This strategy profits in exactly that regime: when price stretches more
+    than ``band_mult`` σ away from the session VWAP, fade it back.
+
+    VWAP anchors to the session (ET trading day for stocks, UTC day for 24/7
+    crypto) using the volume-weighted typical price; σ is the stdev of the
+    close−VWAP deviation over ``dev_window`` bars. When the feed has no volume
+    each bar gets weight 1 (VWAP degrades to a running mean — still a valid
+    anchor).
+
+    Entry (long): close < VWAP − band_mult×σ  (short mirrors, off by default).
+    Exit: close back at/through VWAP (target), or stop at
+          entry − max(stop_mult − band_mult, 0.5)×σ. EOD flatten for stocks.
+    Per-session sanity caps: no trading before ``min_bars`` bars (VWAP/σ are
+    noise early) and at most ``max_trades_per_day`` entries per symbol.
+    """
+
+    def __init__(
+        self,
+        config: VwapConfig,
+        symbols: list[str],
+        trade_24_7: bool = False,
+    ) -> None:
+        self._band = Decimal(str(config.band_mult))
+        # Stop distance in σ beyond the entry; floor at 0.5σ so a misconfigured
+        # stop_mult ≤ band_mult can't produce a stop on the wrong side.
+        self._stop_dist = max(
+            Decimal(str(config.stop_mult)) - Decimal(str(config.band_mult)),
+            Decimal("0.5"),
+        )
+        self._dev_window = config.dev_window
+        self._min_bars = config.min_bars
+        self._max_trades = config.max_trades_per_day
+        self._long_only = config.long_only
+        self._trade_24_7 = trade_24_7
+        self._state: dict[str, _VwapState] = {s: _VwapState() for s in symbols}
+        eod_h, eod_m = config.eod_exit_time.split(":")
+        self._eod_time: time = time(int(eod_h), int(eod_m))
+
+    @staticmethod
+    def _to_et(bar: Bar | AggregatedBar) -> datetime:
+        ts = bar.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+        return ts.astimezone(ET)
+
+    @staticmethod
+    def _to_utc(bar: Bar | AggregatedBar) -> datetime:
+        ts = bar.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+        return ts.astimezone(ZoneInfo("UTC"))
+
+    def _sigma(self, st: _VwapState) -> Decimal | None:
+        n = len(st.devs)
+        if n < self._min_bars:
+            return None
+        mean = sum(st.devs, Decimal("0")) / Decimal(str(n))
+        var = sum(((d - mean) ** 2 for d in st.devs), Decimal("0")) / Decimal(str(n))
+        try:
+            sigma = var.sqrt()
+        except Exception:
+            return None
+        return sigma if sigma > 0 else None
+
+    def on_bar(self, bar: Bar | AggregatedBar) -> Signal | None:
+        if isinstance(bar, AggregatedBar):
+            return None
+
+        symbol = bar.symbol
+        st = self._state.get(symbol)
+        if st is None:
+            return None
+
+        bar_et = self._to_et(bar)
+        bar_time = bar_et.time()
+        if not self._trade_24_7 and not (MARKET_OPEN <= bar_time < MARKET_CLOSE):
+            return None
+
+        # ── Session rollover: re-anchor VWAP each day ─────────────────────────
+        session = self._to_utc(bar).date() if self._trade_24_7 else bar_et.date()
+        if st.session != session:
+            st.session = session
+            st.cum_pv = Decimal("0")
+            st.cum_w = Decimal("0")
+            st.devs = []
+            st.trades_today = 0
+            st.eod_sent = False
+            # An open 24/7 position carries across the anchor reset; its stop
+            # still protects it and the new VWAP becomes the new target.
+
+        high = Decimal(str(bar.high))
+        low = Decimal(str(bar.low))
+        close = Decimal(str(bar.close))
+        vol = Decimal(str(getattr(bar, "volume", 0) or 0))
+
+        # Volume-weighted typical price; weight 1 when the feed has no volume.
+        tp = (high + low + close) / Decimal("3")
+        w = vol if vol > 0 else Decimal("1")
+        st.cum_pv += tp * w
+        st.cum_w += w
+        vwap = st.cum_pv / st.cum_w
+
+        st.devs.append(close - vwap)
+        if len(st.devs) > self._dev_window:
+            st.devs = st.devs[-self._dev_window:]
+
+        # ── EOD flatten (stocks only) ─────────────────────────────────────────
+        if not self._trade_24_7 and bar_time >= self._eod_time:
+            if st.position and not st.eod_sent:
+                st.eod_sent = True
+                st.position = ""
+                return Signal(symbol=symbol, direction=Direction.FLAT,
+                              entry_price=close, stop_price=Decimal("0"),
+                              reason="EOD exit")
+            return None
+
+        # ── Manage an open position ───────────────────────────────────────────
+        if st.position == "BUY":
+            if low <= st.stop_price:
+                st.position = ""
+                return Signal(symbol=symbol, direction=Direction.FLAT,
+                              entry_price=st.stop_price, stop_price=Decimal("0"),
+                              reason="VWAP revert stop")
+            if close >= vwap:
+                st.position = ""
+                return Signal(symbol=symbol, direction=Direction.FLAT,
+                              entry_price=close, stop_price=Decimal("0"),
+                              reason="VWAP revert target (back at VWAP)")
+            return None
+        if st.position == "SELL":
+            if high >= st.stop_price:
+                st.position = ""
+                return Signal(symbol=symbol, direction=Direction.FLAT,
+                              entry_price=st.stop_price, stop_price=Decimal("0"),
+                              reason="VWAP revert stop")
+            if close <= vwap:
+                st.position = ""
+                return Signal(symbol=symbol, direction=Direction.FLAT,
+                              entry_price=close, stop_price=Decimal("0"),
+                              reason="VWAP revert target (back at VWAP)")
+            return None
+
+        # ── Look for an entry ─────────────────────────────────────────────────
+        if st.trades_today >= self._max_trades:
+            return None
+        sigma = self._sigma(st)
+        if sigma is None:
+            return None
+
+        if close < vwap - self._band * sigma:
+            stop = (close - self._stop_dist * sigma).quantize(Decimal("0.01"))
+            st.position = "BUY"
+            st.entry_price = close
+            st.stop_price = stop
+            st.trades_today += 1
+            return Signal(symbol=symbol, direction=Direction.BUY,
+                          entry_price=close, stop_price=stop,
+                          reason=f"VWAP revert long ({self._band}σ below VWAP {vwap.quantize(Decimal('0.01'))})")
+
+        if not self._long_only and close > vwap + self._band * sigma:
+            stop = (close + self._stop_dist * sigma).quantize(Decimal("0.01"))
+            st.position = "SELL"
+            st.entry_price = close
+            st.stop_price = stop
+            st.trades_today += 1
+            return Signal(symbol=symbol, direction=Direction.SELL,
+                          entry_price=close, stop_price=stop,
+                          reason=f"VWAP revert short ({self._band}σ above VWAP {vwap.quantize(Decimal('0.01'))})")
+
+        return None
+
+    def reset_day(self) -> None:
+        """Sessions are keyed by date inside on_bar; nothing extra to do."""
         return

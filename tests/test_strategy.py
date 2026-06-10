@@ -210,3 +210,82 @@ def test_reset_day_clears_all_state(orb: ORBStrategy) -> None:
 def test_unknown_symbol_returns_none(orb: ORBStrategy) -> None:
     sig = orb.on_bar(_bar("TSLA", 200, 205, 198, 202, 10, 0))
     assert sig is None
+
+
+# ── Breakout buffer ───────────────────────────────────────────────────────────
+
+
+def _orb_with(**overrides: Any) -> ORBStrategy:
+    cfg = OrbConfig(opening_range_minutes=15, entry_order_type="limit",
+                    eod_exit_time="15:50", **overrides)
+    return ORBStrategy(config=cfg, symbols=["SPY"], stop_loss_pct=Decimal("1"))
+
+
+def test_buffer_filters_marginal_breakout() -> None:
+    # Range 467–476 (height 9); buffer 50% = 4.5 → breakout needs close > 480.5.
+    s = _orb_with(buffer_pct=50.0)
+    _setup_range(s)
+    assert s.on_bar(_bar("SPY", 476, 480, 475, 477, 9, 50)) is None  # legacy trigger
+    sig = s.on_bar(_bar("SPY", 480, 482, 479, 481, 9, 51))
+    assert sig is not None and sig.direction == Direction.BUY
+
+
+def test_buffer_filters_marginal_breakdown() -> None:
+    s = _orb_with(buffer_pct=50.0)
+    _setup_range(s)
+    assert s.on_bar(_bar("SPY", 467, 468, 464, 466, 9, 50)) is None
+    sig = s.on_bar(_bar("SPY", 463, 464, 461, 462, 9, 51))
+    assert sig is not None and sig.direction == Direction.SELL
+
+
+# ── Range-width filter ────────────────────────────────────────────────────────
+
+
+def test_wide_opening_range_skips_day() -> None:
+    # Range width 9/467 ≈ 1.93% > 1% cap → both directions disabled for the day.
+    s = _orb_with(max_range_pct=1.0)
+    _setup_range(s)
+    assert s.on_bar(_bar("SPY", 480, 482, 479, 481, 9, 50)) is None
+    assert s.on_bar(_bar("SPY", 463, 464, 461, 462, 9, 51)) is None
+
+
+def test_normal_range_passes_width_filter() -> None:
+    s = _orb_with(max_range_pct=5.0)  # 1.93% < 5% → trade as usual
+    _setup_range(s)
+    sig = s.on_bar(_bar("SPY", 476, 480, 475, 477, 9, 50))
+    assert sig is not None and sig.direction == Direction.BUY
+
+
+# ── Range-based stop ──────────────────────────────────────────────────────────
+
+
+def test_range_stop_uses_opposite_range_side_for_long() -> None:
+    # 5% pct-stop (453.15) is far below the range low → stop snaps to 467.
+    cfg = OrbConfig(opening_range_minutes=15, entry_order_type="limit",
+                    eod_exit_time="15:50", stop_mode="range")
+    s = ORBStrategy(config=cfg, symbols=["SPY"], stop_loss_pct=Decimal("5"))
+    _setup_range(s)
+    sig = s.on_bar(_bar("SPY", 476, 480, 475, 477, 9, 50))
+    assert sig is not None
+    assert sig.stop_price == Decimal("467.00")
+
+
+def test_range_stop_capped_by_pct_stop_for_long() -> None:
+    # 1% pct-stop (472.23) is tighter than the range low → pct stop wins.
+    cfg = OrbConfig(opening_range_minutes=15, entry_order_type="limit",
+                    eod_exit_time="15:50", stop_mode="range")
+    s = ORBStrategy(config=cfg, symbols=["SPY"], stop_loss_pct=Decimal("1"))
+    _setup_range(s)
+    sig = s.on_bar(_bar("SPY", 476, 480, 475, 477, 9, 50))
+    assert sig is not None
+    assert sig.stop_price == Decimal("472.23")
+
+
+def test_range_stop_uses_opposite_range_side_for_short() -> None:
+    cfg = OrbConfig(opening_range_minutes=15, entry_order_type="limit",
+                    eod_exit_time="15:50", stop_mode="range")
+    s = ORBStrategy(config=cfg, symbols=["SPY"], stop_loss_pct=Decimal("5"))
+    _setup_range(s)
+    sig = s.on_bar(_bar("SPY", 467, 468, 464, 466, 9, 50))
+    assert sig is not None
+    assert sig.stop_price == Decimal("476.00")

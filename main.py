@@ -16,7 +16,7 @@ from executor import OrderExecutor
 from logger import log_error, log_info, setup_logging
 from research import PremarketResearch
 from risk import RiskManager
-from strategy import EMAStrategy, ORBStrategy, Strategy, TrendSRStrategy
+from strategy import EMAStrategy, ORBStrategy, Strategy, TrendSRStrategy, VWAPRevertStrategy
 
 ET = ZoneInfo("America/New_York")
 MARKET_OPEN: time = time(9, 30)
@@ -49,6 +49,19 @@ def _build_strategy(config: object) -> tuple[Strategy, str]:
             strategy="trend_sr",
             ma_fast=config.strategy.trend_sr.ma_fast,
             ma_slow=config.strategy.trend_sr.ma_slow,
+        )
+    elif name == "vwap_revert":
+        strat = VWAPRevertStrategy(
+            config=config.strategy.vwap_revert,
+            symbols=config.symbols,
+            trade_24_7=is_crypto,
+        )
+        order_type = "market"
+        log_info(
+            "strategy_selected",
+            strategy="vwap_revert",
+            band_mult=config.strategy.vwap_revert.band_mult,
+            stop_mult=config.strategy.vwap_revert.stop_mult,
         )
     elif name == "ema":
         strat = EMAStrategy(
@@ -111,6 +124,7 @@ async def _run_donchian(config: object, kill_path: Path = Path("KILL"),
         trailing_activation_pct=dc.trailing_activation_pct,
         trailing_pct=dc.trailing_pct,
         long_only=dc.long_only,
+        exit_lookback=dc.exit_lookback,
         slug=slug,
     )
     runner = DonchianRunner(

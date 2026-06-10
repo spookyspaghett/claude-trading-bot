@@ -15,9 +15,10 @@ const DEFAULT: Config = {
   risk: { max_position_usd: 50000, stop_loss_pct: 1.0, daily_loss_limit_usd: 500, max_open_positions: 4 },
   strategy: {
     name: 'orb',
-    orb: { opening_range_minutes: 15, entry_order_type: 'limit', eod_exit_time: '15:50' },
-    ema: { fast_period: 9, slow_period: 21, entry_order_type: 'market', eod_exit_time: '15:50' },
-    donchian: { lookback_days: 40, trend_ma: 200, trailing_activation_pct: 1.0, trailing_pct: 8.0, long_only: true },
+    orb: { opening_range_minutes: 15, entry_order_type: 'limit', eod_exit_time: '15:50', buffer_pct: 0, stop_mode: 'pct', max_range_pct: 0 },
+    ema: { fast_period: 9, slow_period: 21, entry_order_type: 'market', eod_exit_time: '15:50', min_separation_pct: 0 },
+    donchian: { lookback_days: 40, trend_ma: 200, trailing_activation_pct: 1.0, trailing_pct: 8.0, long_only: true, exit_lookback: 0 },
+    vwap_revert: { band_mult: 2.0, stop_mult: 3.5, dev_window: 60, min_bars: 30, max_trades_per_day: 3, long_only: true, eod_exit_time: '15:50' },
     trend_sr: {
       bar_minutes: 15, ma_fast: 21, ma_slow: 55, regime_ma: 200,
       pivot_lookback: 20, pivot_strength: 3, atr_period: 14, atr_mult: 2.0,
@@ -126,6 +127,15 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
   }
   function setTsr(key: keyof Config['strategy']['trend_sr'], val: number | boolean) {
     setCfg(prev => ({ ...prev, strategy: { ...prev.strategy, trend_sr: { ...prev.strategy.trend_sr, [key]: val } } }))
+  }
+  function setVwap(key: string, val: number | boolean | string) {
+    setCfg(prev => ({
+      ...prev,
+      strategy: {
+        ...prev.strategy,
+        vwap_revert: { ...(DEFAULT.strategy.vwap_revert!), ...prev.strategy.vwap_revert, [key]: val },
+      },
+    }))
   }
   function setStrategyName(name: string) {
     setCfg(prev => ({ ...prev, strategy: { ...prev.strategy, name } }))
@@ -238,6 +248,7 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                 { id: 'ema',      label: 'EMA' },
                 { id: 'donchian', label: 'Donchian' },
                 { id: 'trend_sr', label: 'Trend/SR' },
+                { id: 'vwap_revert', label: 'VWAP' },
               ].map(({ id, label }) => (
                 <button key={id}
                   onClick={() => setStrategyName(id)}
@@ -286,6 +297,35 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     onChange={e => setOrb('eod_exit_time', e.target.value)}
                     placeholder="15:50"
                   />
+                </div>
+                <div>
+                  <Label tip="The close must clear the range by this % of the range HEIGHT before a breakout counts. Filters the classic 1-cent false breakout. E.g. 10 = needs 10% of the range beyond the edge. 0 = any tick over triggers (legacy).">
+                    Breakout buffer (% of range, 0 = off)
+                  </Label>
+                  <NumInput value={cfg.strategy.orb.buffer_pct ?? 0} step={5} min={0} max={100}
+                    onChange={v => setOrb('buffer_pct', v)} />
+                  <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 10 — skips marginal breakouts</p>
+                </div>
+                <div>
+                  <Label tip="'Range' puts the stop at the opposite side of the opening range — the natural invalidation level (capped by Stop loss % so risk never exceeds it). 'Fixed %' is the legacy stop unrelated to the range.">
+                    Stop placement
+                  </Label>
+                  <select
+                    className="mt-1 w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+                    value={cfg.strategy.orb.stop_mode ?? 'pct'}
+                    onChange={e => setOrb('stop_mode', e.target.value)}
+                  >
+                    <option value="pct">Fixed % (legacy)</option>
+                    <option value="range">Opposite side of range (recommended)</option>
+                  </select>
+                </div>
+                <div>
+                  <Label tip="Skip the whole day when the opening range is wider than this % of price — huge ranges (news days) give breakouts terrible risk/reward. 0 = trade every day.">
+                    Max range width (% of price, 0 = off)
+                  </Label>
+                  <NumInput value={cfg.strategy.orb.max_range_pct ?? 0} step={0.25} min={0} max={50}
+                    onChange={v => setOrb('max_range_pct', v)} />
+                  <p className="text-[10px] text-slate-600 mt-0.5">Typical: 1.5–2 for large caps</p>
                 </div>
               </div>
             )}
@@ -336,6 +376,14 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     placeholder="15:50"
                   />
                 </div>
+                <div>
+                  <Label tip="Hysteresis band: the fast EMA must exceed the slow by this % before a cross counts (and dip the same % below to flip back). Kills the rapid-fire flip-flop trades of a flat market. 0 = every raw cross trades (legacy).">
+                    Min separation (% , 0 = off)
+                  </Label>
+                  <NumInput value={cfg.strategy.ema.min_separation_pct ?? 0} step={0.01} min={0} max={10}
+                    onChange={v => setEma('min_separation_pct', v)} />
+                  <p className="text-[10px] text-slate-600 mt-0.5">Typical: 0.05–0.1 on 1-min bars — big churn reduction</p>
+                </div>
               </div>
             )}
 
@@ -361,6 +409,15 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                   <NumInput value={cfg.strategy.donchian.lookback_days} min={5} max={200}
                     onChange={v => setDon('lookback_days', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 40 (best backtested result)</p>
+                </div>
+
+                <div>
+                  <Label tip="Turtle-style asymmetric exit: leave the position when price breaks this SHORTER channel instead of the entry channel. Exiting on the same 40-day channel you entered on gives back far too much open profit. 0 = exit on the entry channel (legacy). Must be smaller than the lookback.">
+                    Exit channel days (0 = same as entry)
+                  </Label>
+                  <NumInput value={cfg.strategy.donchian.exit_lookback ?? 0} min={0} max={200}
+                    onChange={v => setDon('exit_lookback', v)} />
+                  <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 20 with a 40-day entry (classic 40-in/20-out)</p>
                 </div>
 
                 <div>
@@ -552,6 +609,81 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                         onChange={v => setTsr('volume_ma', v)} />
                     </div>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── VWAP reversion settings ───────────────────────────────── */}
+            {mode === 'vwap_revert' && (
+              <div className="space-y-2.5 pt-1">
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  <span className="text-slate-300 font-medium">VWAP Mean Reversion</span> — the counterpart to the breakout
+                  strategies: it profits in the range-bound chop where they churn. When price stretches more than N standard
+                  deviations away from the session VWAP, it fades the move back toward VWAP. Anchors reset daily.
+                </p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+                  <div>
+                    <Label tip="Enter when price is this many standard deviations away from the session VWAP. Larger = rarer but more stretched (higher-probability) entries. 2.0 is the classic band.">
+                      Entry band (σ)
+                    </Label>
+                    <NumInput value={cfg.strategy.vwap_revert?.band_mult ?? 2.0} step={0.25} min={0.5} max={10}
+                      onChange={v => setVwap('band_mult', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Stop sits this many σ from VWAP (beyond the entry). Must be larger than the entry band — the gap between them is your risk per trade.">
+                      Stop (σ)
+                    </Label>
+                    <NumInput value={cfg.strategy.vwap_revert?.stop_mult ?? 3.5} step={0.25} min={1} max={20}
+                      onChange={v => setVwap('stop_mult', v)} />
+                  </div>
+                  <div>
+                    <Label tip="How many bars the deviation's standard deviation is measured over. 60 = the last hour on 1-minute bars.">
+                      σ window (bars)
+                    </Label>
+                    <NumInput value={cfg.strategy.vwap_revert?.dev_window ?? 60} step={5} min={10} max={500}
+                      onChange={v => setVwap('dev_window', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Bars into the session before trading starts — VWAP and σ are meaningless in the first few minutes. 30 = no trades before 10:00 ET on stocks.">
+                      Warmup (bars)
+                    </Label>
+                    <NumInput value={cfg.strategy.vwap_revert?.min_bars ?? 30} step={5} min={10} max={500}
+                      onChange={v => setVwap('min_bars', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Maximum entries per symbol per session. Caps the damage on strongly trending days when reversion keeps losing.">
+                      Max trades / day
+                    </Label>
+                    <NumInput value={cfg.strategy.vwap_revert?.max_trades_per_day ?? 3} step={1} min={1} max={50}
+                      onChange={v => setVwap('max_trades_per_day', v)} />
+                  </div>
+                  <div>
+                    <Label tip="Time (Eastern) at which all positions are flattened. Crypto profiles trade 24/7 and ignore this.">
+                      EOD exit (ET, HH:MM)
+                    </Label>
+                    <input
+                      className="mt-1 w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500"
+                      value={cfg.strategy.vwap_revert?.eod_exit_time ?? '15:50'}
+                      onChange={e => setVwap('eod_exit_time', e.target.value)}
+                      placeholder="15:50"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 pt-0.5">
+                  <input
+                    type="checkbox" id="vwap-long-only"
+                    checked={cfg.strategy.vwap_revert?.long_only ?? true}
+                    onChange={e => setVwap('long_only', e.target.checked)}
+                    className="mt-0.5 accent-blue-500"
+                  />
+                  <label htmlFor="vwap-long-only" className="text-xs text-slate-300 font-medium cursor-pointer flex items-center gap-1">
+                    Long only (no short selling)
+                    <Tip text="When ON, only fades dips below VWAP (buys). Turn OFF on stock profiles to also fade spikes above VWAP with shorts. Keep ON for crypto — Alpaca can't short crypto." />
+                  </label>
+                </div>
+                <div className="rounded-lg bg-amber-900/20 border border-amber-800/40 p-2.5 text-[11px] text-amber-300">
+                  Mean reversion loses on strongly trending days — that's by design; it wins the chop the other strategies lose.
+                  Backtest it on your symbols first, and consider running it alongside a breakout profile rather than instead of one.
                 </div>
               </div>
             )}
