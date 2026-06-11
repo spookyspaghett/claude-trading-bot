@@ -121,9 +121,10 @@ export default function BacktestPanel() {
   const [trailingActivationPct, setTrailingActivationPct] = useState(2.0)
   const [trailingPct, setTrailingPct] = useState(8.0)
   const [startingEquity, setStartingEquity] = useState(500000)
-  const [strategy, setStrategy] = useState<'auto' | 'trend_sr' | 'ema'>('auto')
+  const [strategy, setStrategy] = useState<'auto' | 'trend_sr' | 'ema' | 'vwap_revert'>('auto')
   const [slippageBps, setSlippageBps] = useState(0)
   const [commission, setCommission] = useState(0)
+  const [exitLookback, setExitLookback] = useState(0)
   const [maFast, setMaFast] = useState(21)
   const [maSlow, setMaSlow] = useState(55)
   const [pivotLookback, setPivotLookback] = useState(20)
@@ -184,6 +185,7 @@ export default function BacktestPanel() {
       form.append('pivot_strength', String(pivotStrength))
       form.append('min_adx', String(minAdx))
       form.append('volume_mult', String(volumeMult))
+      form.append('exit_lookback', String(exitLookback))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -301,11 +303,12 @@ export default function BacktestPanel() {
             <div className="flex flex-wrap gap-3 items-end">
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Strategy</label>
-                <select value={strategy} onChange={e => setStrategy(e.target.value as 'auto' | 'trend_sr' | 'ema')}
+                <select value={strategy} onChange={e => setStrategy(e.target.value as 'auto' | 'trend_sr' | 'ema' | 'vwap_revert')}
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500">
                   <option value="auto">Auto (Donchian / ORB)</option>
                   <option value="trend_sr">Trend/SR (crypto)</option>
                   <option value="ema">EMA crossover</option>
+                  <option value="vwap_revert">VWAP mean-reversion</option>
                 </select>
               </div>
               <div>
@@ -320,20 +323,30 @@ export default function BacktestPanel() {
                   onChange={e => setCommission(Math.max(0, parseFloat(e.target.value) || 0))}
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-28 focus:outline-none focus:border-blue-500" />
               </div>
+              {/* Fast/Slow MA — used by Trend/SR (trend filter) and EMA (the crossover itself) */}
               {(strategy === 'trend_sr' || strategy === 'ema') && (
                 <>
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">Fast MA</label>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Fast MA {strategy === 'ema' && <span className="text-slate-600">(fast EMA)</span>}
+                    </label>
                     <input type="number" min={2} step={1} value={maFast}
                       onChange={e => setMaFast(Math.max(2, parseInt(e.target.value) || 21))}
                       className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
                   </div>
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">Slow MA</label>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Slow MA {strategy === 'ema' && <span className="text-slate-600">(slow EMA)</span>}
+                    </label>
                     <input type="number" min={3} step={1} value={maSlow}
                       onChange={e => setMaSlow(Math.max(3, parseInt(e.target.value) || 55))}
                       className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500" />
                   </div>
+                </>
+              )}
+              {/* Pivot / ADX / volume — Trend/SR only */}
+              {strategy === 'trend_sr' && (
+                <>
                   <div>
                     <label className="text-xs text-slate-500 block mb-1">Pivot lookback</label>
                     <input type="number" min={2} step={1} value={pivotLookback}
@@ -365,6 +378,15 @@ export default function BacktestPanel() {
                     <p className="text-[10px] text-slate-600 mt-0.5">vol ≥ N× avg (1.2-1.5)</p>
                   </div>
                 </>
+              )}
+              {/* VWAP — no per-run knobs beyond Long only; bands come from the profile config */}
+              {strategy === 'vwap_revert' && (
+                <div className="flex items-end">
+                  <p className="text-[11px] text-slate-500 max-w-xs leading-relaxed">
+                    Fades 2σ moves off the session VWAP, exits back at VWAP with a 3.5σ stop.
+                    Only <span className="text-slate-300">Long only</span> is tunable here; band/stop widths use defaults.
+                  </p>
+                </div>
               )}
             </div>
 
@@ -398,6 +420,19 @@ export default function BacktestPanel() {
                   onChange={e => setTrendMa(Math.max(0, parseInt(e.target.value) || 0))}
                 />
               </div>
+              {strategy === 'auto' && (
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">
+                    Exit lookback <span className="text-slate-600">(0 = off)</span>
+                  </label>
+                  <input type="number" min={0} max={200} step={1}
+                    className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-24 focus:outline-none focus:border-blue-500"
+                    value={exitLookback}
+                    onChange={e => setExitLookback(Math.max(0, parseInt(e.target.value) || 0))}
+                  />
+                  <p className="text-[10px] text-slate-600 mt-0.5">Donchian: exit on N-day channel</p>
+                </div>
+              )}
               <div className="flex flex-col justify-end pb-0.5">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input type="checkbox" checked={longOnly} onChange={e => setLongOnly(e.target.checked)}
