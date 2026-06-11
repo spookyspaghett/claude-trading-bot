@@ -1228,6 +1228,13 @@ def _run_sync_from_bars(
             starting_equity=starting_equity, costs=costs,
         )
     if strategy == "vwap_revert":
+        if _is_daily_data(bars):
+            raise ValueError(
+                "VWAP mean-reversion needs 1-minute intraday bars to build the "
+                "session VWAP and its σ-bands, but this file looks like daily data "
+                "(one bar per day). Upload a 1-minute file — use the '1-min' Stooq "
+                "links in the panel, or Alpaca SIP — then run VWAP again."
+            )
         return _run_with_vwap(
             symbol, bars, start, end, risk_config,
             long_only=long_only,

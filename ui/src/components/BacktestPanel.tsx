@@ -384,7 +384,8 @@ export default function BacktestPanel() {
                 <div className="flex items-end">
                   <p className="text-[11px] text-slate-500 max-w-xs leading-relaxed">
                     Fades 2σ moves off the session VWAP, exits back at VWAP with a 3.5σ stop.
-                    Only <span className="text-slate-300">Long only</span> is tunable here; band/stop widths use defaults.
+                    <span className="text-amber-400/90"> Needs 1-minute bars</span> (daily data → 0 trades).
+                    Only <span className="text-slate-300">Long only</span> is tunable here.
                   </p>
                 </div>
               )}
