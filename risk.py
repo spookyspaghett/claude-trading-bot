@@ -124,6 +124,19 @@ class RiskManager:
     def daily_pnl(self) -> Decimal:
         return self._daily_realized_pnl
 
+    def clear_positions(self) -> None:
+        """Forget the position book after a flatten, keeping daily P&L intact.
+
+        Every exit routes through ``OrderExecutor.flatten_all``, which used to
+        clear only its own maps — so symbols stayed in ``_open_positions`` /
+        ``_pending`` forever and ``check_new_order`` eventually rejected
+        everything with "max open positions reached". Crypto bots never call
+        ``reset_day()``, so for them the lockout was permanent.
+        """
+        self._open_positions.clear()
+        self._pending.clear()
+        self._unrealized_pnl = Decimal("0")
+
     def reset_day(self) -> None:
         """Reset daily counters. Kill switch is intentionally NOT reset."""
         self._daily_realized_pnl = Decimal("0")

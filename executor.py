@@ -182,12 +182,19 @@ class OrderExecutor:
         try:
             await self._broker.cancel_all_orders()
             await self._broker.close_all_positions()
+        except Exception as exc:
+            log_error("flatten_all_failed", error=str(exc))
+        finally:
+            # Clear local state even if the broker call failed — leaving stale
+            # entries behind is what wedged the bot. In particular the risk book
+            # must be cleared too: it was only ever cleared by reset_day(), which
+            # crypto never calls, so flattened symbols kept counting toward the
+            # open-position cap and the bot silently stopped taking new trades.
             self._pending_entries.clear()
             self._pending_stops.clear()
             self._cost_basis.clear()
             self._open.clear()
-        except Exception as exc:
-            log_error("flatten_all_failed", error=str(exc))
+            self._risk.clear_positions()
 
     async def poll_order_status(self) -> None:
         """Refresh pending entry and stop orders; log fills and update state."""

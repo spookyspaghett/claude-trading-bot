@@ -243,3 +243,55 @@ def test_unrealized_drawdown_trips_daily_limit() -> None:
     assert rm.should_flatten_all is True
     ok, _ = rm.check_new_order("AAPL")
     assert not ok
+
+
+def test_flatten_clears_position_book_but_keeps_daily_pnl() -> None:
+    """Every exit routes through flatten_all(); the risk book must be released.
+
+    It used to keep flattened symbols in _open_positions/_pending forever, so
+    check_new_order eventually rejected everything with "max open positions
+    reached" — permanently for crypto, which never calls reset_day().
+    """
+    r = RiskManager(
+        max_position_usd=Decimal("1000"), stop_loss_pct=Decimal("1"),
+        daily_loss_limit_usd=Decimal("500"), max_open_positions=2,
+    )
+    r.record_fill("BTC/USD", Decimal("1"), Decimal("-10"))
+    r.record_fill("ETH/USD", Decimal("1"), Decimal("-5"))
+    r.register_pending("SOL/USD")
+    assert r.check_new_order("DOGE/USD")[0] is False   # cap reached
+
+    r.clear_positions()
+
+    assert r.check_new_order("DOGE/USD")[0] is True    # slots released
+    assert r.open_symbols == []
+    assert r.daily_pnl == Decimal("-15")               # daily P&L survives
+
+
+def test_flatten_does_not_clear_the_daily_limit() -> None:
+    # Flattening because the limit tripped must not un-trip it.
+    r = RiskManager(
+        max_position_usd=Decimal("1000"), stop_loss_pct=Decimal("1"),
+        daily_loss_limit_usd=Decimal("100"), max_open_positions=4,
+    )
+    r.record_fill("BTC/USD", Decimal("1"), Decimal("-150"))
+    assert r.should_flatten_all is True
+    r.clear_positions()
+    assert r.should_flatten_all is True
+    assert r.check_new_order("ETH/USD") == (False, "daily loss limit reached")
+
+
+def test_reset_daily_limit_keeps_open_positions() -> None:
+    # The crypto day rollover: reset P&L counters, but positions ride overnight.
+    r = RiskManager(
+        max_position_usd=Decimal("1000"), stop_loss_pct=Decimal("1"),
+        daily_loss_limit_usd=Decimal("100"), max_open_positions=4,
+    )
+    r.record_fill("BTC/USD", Decimal("1"), Decimal("-150"))
+    assert r.should_flatten_all is True
+
+    r.reset_daily_limit()
+
+    assert r.should_flatten_all is False
+    assert r.daily_pnl == Decimal("0")
+    assert r.open_symbols == ["BTC/USD"]   # still held
