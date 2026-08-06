@@ -27,10 +27,25 @@ ET = ZoneInfo("America/New_York")
 
 # Time windows (ET)
 _EOD_START   = dtime(16, 5)
-_EOD_END     = dtime(16, 12)
+# The EOD window stays open all evening on purpose. Alpaca's consolidated daily
+# bar routinely isn't published for hours after the close, and the scan refuses
+# to act on a stale bar — a 7-minute window meant the scan could fail every
+# single day, so ran_eod_date never advanced and no overnight plan was ever
+# produced. Retries inside the window back off (see _EOD_BACKOFF_AFTER).
+_EOD_END     = dtime(20, 0)
 _OPEN_START  = dtime(9, 31)
 _OPEN_END    = dtime(9, 36)
 _MKTCLOSE    = dtime(16, 0)
+
+# Retry pacing inside the EOD window: fast at first (the bar is usually there
+# within minutes), then slow so a holiday/outage doesn't hammer the data API.
+_EOD_BACKOFF_AFTER = 10
+_EOD_RETRY_FAST    = 60
+_EOD_RETRY_SLOW    = 600
+
+# Proof-of-life cadence. A Donchian bot can legitimately log nothing for hours,
+# which made the dashboard feed look dead on a perfectly healthy bot.
+_HEARTBEAT_SECONDS = 1800
 
 # Crypto daily scan window (UTC) — bars roll at 00:00 UTC.
 _CRYPTO_SCAN_START = dtime(0, 5)
@@ -92,6 +107,10 @@ class DonchianRunner:
         # Debounce: which time-windows we already ran today (persisted).
         self._ran_eod_date:   str = ""
         self._ran_open_date:  str = ""
+        # Retry pacing + proof-of-life (in-memory only; a restart just resets them).
+        self._eod_attempts: int = 0
+        self._eod_attempt_date: str = ""
+        self._last_heartbeat: datetime | None = None
         self._load_handoff()
 
     # ── handoff persistence (restart-safe queue + debounce) ────────────────────
@@ -190,26 +209,59 @@ class DonchianRunner:
             now      = datetime.now(tz=ET)
             t        = now.time()
             today_s  = str(now.date())
+            weekday  = now.weekday() < 5
 
-            # 16:05–16:12 → EOD scan (once per day)
-            if _EOD_START <= t <= _EOD_END and self._ran_eod_date != today_s:
+            self._heartbeat(now)
+            # Expire on every pass, not just at startup: a bot that runs for
+            # weeks without a restart would otherwise never re-evaluate a queue
+            # whose open it missed, and could fire a days-old plan.
+            self._expire_stale_queue()
+
+            # Evening EOD scan on trading weekdays (once per day). The weekday
+            # guard matters: a weekend scan can only ever see Friday's bar, and
+            # running it used to wipe the queue Friday's scan had produced.
+            in_eod_window = _EOD_START <= t <= _EOD_END
+            if weekday and in_eod_window and self._ran_eod_date != today_s:
+                if self._eod_attempt_date != today_s:
+                    self._eod_attempt_date = today_s
+                    self._eod_attempts = 0
+                self._eod_attempts += 1
                 await self._run_eod_scan(today_s)
-                await asyncio.sleep(60)
+                await asyncio.sleep(
+                    _EOD_RETRY_FAST if self._eod_attempts <= _EOD_BACKOFF_AFTER
+                    else _EOD_RETRY_SLOW
+                )
                 continue
 
             # 09:31–09:36 → place morning orders (once per day)
-            if _OPEN_START <= t <= _OPEN_END and self._ran_open_date != today_s:
+            in_open_window = _OPEN_START <= t <= _OPEN_END
+            if weekday and in_open_window and self._ran_open_date != today_s:
                 await self._place_morning_orders(today_s)
                 await asyncio.sleep(60)
                 continue
 
             # During market hours → check positions every 60 s
-            if _OPEN_START <= t < _MKTCLOSE:
+            if weekday and _OPEN_START <= t < _MKTCLOSE:
                 await self._check_open_positions()
                 await asyncio.sleep(60)
                 continue
 
             await asyncio.sleep(30)
+
+    def _heartbeat(self, now: datetime) -> None:
+        """Emit a periodic proof-of-life line so the dashboard feed shows the
+        bot is alive on days where it has nothing else to say."""
+        if (self._last_heartbeat is not None
+                and (now - self._last_heartbeat).total_seconds() < _HEARTBEAT_SECONDS):
+            return
+        self._last_heartbeat = now
+        log_info("heartbeat",
+                 strategy="donchian",
+                 tracked=len(self._strategy.open_positions),
+                 queued_entries=len(self._queued_entries),
+                 queued_exits=len(self._queued_exits),
+                 last_scan=self._ran_eod_date or "never",
+                 last_open=self._ran_open_date or "never")
 
     async def _run_crypto(self, shutdown_event: asyncio.Event) -> None:
         """24/7 loop: scan once daily at ~00:05 UTC, enter immediately at market,
@@ -218,6 +270,8 @@ class DonchianRunner:
             now     = datetime.now(tz=timezone.utc)
             t       = now.time()
             today_s = str(now.date())
+
+            self._heartbeat(now)
 
             if _CRYPTO_SCAN_START <= t <= _CRYPTO_SCAN_END and self._ran_eod_date != today_s:
                 await self._run_eod_scan(today_s)
@@ -270,14 +324,20 @@ class DonchianRunner:
 
     async def _run_eod_scan(self, ran_date: str) -> None:
         log_info("donchian_eod_scan_start", symbols=self._symbols)
-        self._queued_entries.clear()
-        self._queued_exits.clear()
         needed = self._strategy.lookback + self._strategy.trend_ma + 20
         try:
             expected = date.fromisoformat(ran_date)
         except ValueError:
             expected = datetime.now(tz=ET).date()
         fresh_count = 0
+
+        # Accumulate into locals and only commit once the scan is known good.
+        # Clearing the live queue up-front destroyed the pending overnight plan
+        # whenever the scan then aborted (stale data, data outage, a weekend
+        # window firing) — the next morning found an empty queue, marked the day
+        # done and persisted the emptiness, silently dropping the trades.
+        new_entries: dict[str, str] = {}
+        new_exits: set[str] = set()
 
         for symbol in self._symbols:
             try:
@@ -302,7 +362,7 @@ class DonchianRunner:
                          close=result.close_price)
 
                 if result.action in ("enter_long", "enter_short"):
-                    self._queued_entries[symbol] = result.action
+                    new_entries[symbol] = result.action
                     await alerts.alert_signal(
                         symbol=symbol,
                         direction="BUY" if result.action == "enter_long" else "SELL",
@@ -314,7 +374,7 @@ class DonchianRunner:
                     )
 
                 elif result.action == "exit":
-                    self._queued_exits.add(symbol)
+                    new_exits.add(symbol)
                     await alerts.alert_signal(
                         symbol=symbol,
                         direction="FLAT",
@@ -326,13 +386,18 @@ class DonchianRunner:
                 log_error("donchian_scan_error", symbol=symbol, error=str(exc))
 
         # Total data outage (stocks): not one symbol had today's bar. Don't mark
-        # the day done so the 16:05–16:12 window retries on the next 60s tick
-        # rather than skipping the whole session (#5).
+        # the day done so the EOD window retries rather than skipping the whole
+        # session (#5), and leave any existing queue intact — no symbol was
+        # scanned, so we learned nothing that should invalidate last night's plan.
         if not self._is_crypto and self._symbols and fresh_count == 0:
-            log_error("donchian_eod_scan_stale_all", expected=str(expected))
+            log_error("donchian_eod_scan_stale_all", expected=str(expected),
+                      kept_entries=list(self._queued_entries),
+                      kept_exits=list(self._queued_exits))
             return
 
         # Persist the queue + debounce so the morning handoff survives a restart.
+        self._queued_entries = new_entries
+        self._queued_exits = new_exits
         self._queued_date = ran_date
         self._ran_eod_date = ran_date
         self._save_handoff()

@@ -326,3 +326,85 @@ def test_missed_morning_window_expires_even_when_recent(monkeypatch) -> None:  #
     r._expire_stale_queue()   # 1 day old but the open was missed → expire
     assert r._queued_entries == {}
     assert "AAPL" not in r._strategy.open_positions
+
+
+# ── overnight-plan preservation (long-running / weekend regressions) ──────────
+
+@pytest.mark.asyncio
+async def test_eod_scan_preserves_queue_when_all_bars_stale(monkeypatch) -> None:  # noqa: ANN001
+    """A scan that can't complete must not destroy the pending overnight plan.
+
+    This is the weekend path: Friday's scan queues Monday's orders, then the
+    Saturday/Sunday window fires and only ever sees Friday's bar. The scan used
+    to clear the queue up-front, so Monday's open found nothing to do.
+    """
+    import datetime as dtm
+    r = _runner()
+    r._queued_entries = {"AAPL": "enter_long"}
+    r._queued_exits = {"MSFT"}
+    r._queued_date = "2026-06-12"          # Friday's scan
+    r._save_handoff()
+
+    async def _stale_bars(symbol, n=260):  # noqa: ANN001, ANN202
+        return _daily_series(dtm.date(2026, 6, 12), n=max(n, 5))
+    monkeypatch.setattr(r, "_fetch_daily_bars", _stale_bars)
+
+    await r._run_eod_scan("2026-06-13")    # Saturday — no new session bar
+
+    assert r._queued_entries == {"AAPL": "enter_long"}   # plan intact
+    assert r._queued_exits == {"MSFT"}
+    assert r._queued_date == "2026-06-12"
+    assert r._ran_eod_date != "2026-06-13"               # day not marked done
+
+    r2 = _runner()                          # and it survives a restart
+    assert r2._queued_entries == {"AAPL": "enter_long"}
+    assert r2._queued_exits == {"MSFT"}
+
+
+@pytest.mark.asyncio
+async def test_eod_scan_replaces_queue_on_success(monkeypatch) -> None:  # noqa: ANN001
+    """A scan that *does* complete replaces the previous day's queue wholesale."""
+    import datetime as dtm
+    from donchian_strategy import ScanResult
+
+    r = _runner()
+    r._queued_entries = {"OLD": "enter_long"}
+    r._queued_exits = {"GONE"}
+
+    async def _fresh_bars(symbol, n=260):  # noqa: ANN001, ANN202
+        return _daily_series(dtm.date(2026, 6, 10), n=max(n, 5))
+    monkeypatch.setattr(r, "_fetch_daily_bars", _fresh_bars)
+    monkeypatch.setattr(r._strategy, "scan",
+                        lambda sym, bars: ScanResult(action="enter_long", symbol=sym,  # noqa: ARG005
+                                                     close_price=100.0, stop_price=95.0))
+
+    await r._run_eod_scan("2026-06-10")
+
+    assert r._queued_entries == {"AAPL": "enter_long"}   # rebuilt, not merged
+    assert r._queued_exits == set()
+    assert "OLD" not in r._queued_entries
+    assert r._ran_eod_date == "2026-06-10"
+
+
+def test_heartbeat_is_throttled() -> None:
+    r = _runner()
+    now = datetime.now(tz=dr.ET)
+
+    r._heartbeat(now)
+    first = r._last_heartbeat
+    assert first is not None
+
+    r._heartbeat(now + timedelta(seconds=10))
+    assert r._last_heartbeat == first                    # throttled
+
+    r._heartbeat(now + timedelta(seconds=dr._HEARTBEAT_SECONDS + 1))
+    assert r._last_heartbeat != first                    # fired again
+
+
+def test_eod_window_is_wide_enough_for_a_late_daily_bar() -> None:
+    # Alpaca's daily bar often lands well after 16:12 ET; a narrow window meant
+    # the scan could fail every day and never produce a plan.
+    assert dr._EOD_END > dr._EOD_START
+    span = (dr._EOD_END.hour * 60 + dr._EOD_END.minute) - \
+           (dr._EOD_START.hour * 60 + dr._EOD_START.minute)
+    assert span >= 120
