@@ -65,6 +65,10 @@ class OrderExecutor:
         self._trail = Decimal(str(trailing_stop_pct)) / Decimal("100")
         self._loser_cut_threshold = loser_cut_pct / Decimal("100")
         self._pending_entries: dict[str, _PendingEntry] = {}
+        # entry order_id → quantity already booked, so a partially-filled order
+        # is logged/alerted/recorded once per *new* share rather than in full on
+        # every poll for as long as it stays partial.
+        self._entry_filled: dict[str, Decimal] = {}
         # stop_order_id → symbol
         self._pending_stops: dict[str, str] = {}
         # symbol → live position whose broker stop trails the peak price
@@ -218,10 +222,31 @@ class OrderExecutor:
         except Exception as exc:
             log_error("trail_raise_failed", symbol=symbol, error=str(exc))
 
+    async def _replace_expired_stop(self, symbol: str, op: _OpenPos) -> None:
+        """Re-place a protective stop that expired or was cancelled at the broker."""
+        stop_side = OrderSide.SELL if op.direction == Direction.BUY else OrderSide.BUY
+        try:
+            order = await self._broker.submit_stop_order(
+                symbol=symbol, qty=op.qty, side=stop_side, stop_price=op.stop_price,
+            )
+            op.stop_order_id = str(order.id)
+            self._pending_stops[op.stop_order_id] = symbol
+            _log.info("protective_stop_replaced", symbol=symbol,
+                      stop=str(op.stop_price))
+        except Exception as exc:
+            log_error("protective_stop_replace_failed", symbol=symbol,
+                      stop=str(op.stop_price), error=str(exc))
+
     async def _update_trailing_stop(self, symbol: str, current_price: Decimal) -> None:
         op = self._open.get(symbol)
         if op is None or not self._place_broker_stop:
             return
+        # A DAY stop that expired overnight leaves the position unprotected —
+        # restore it before trailing anything.
+        if not op.stop_order_id:
+            await self._replace_expired_stop(symbol, op)
+            if not op.stop_order_id:
+                return
         if self._trail <= 0 or current_price <= 0:
             return
         one = Decimal("1")
@@ -314,68 +339,57 @@ class OrderExecutor:
 
             status = order.status
             if status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
-                filled_qty_str = str(order.filled_qty or "0")
-                filled_price_str = str(order.filled_avg_price or "0")
-                log_fill(
-                    order_id=order_id,
-                    symbol=str(order.symbol),
-                    filled_qty=filled_qty_str,
-                    filled_avg_price=filled_price_str,
-                )
-                await alerts.alert_fill(
-                    symbol=str(order.symbol),
-                    side=str(order.side.value) if order.side else "",
-                    qty=filled_qty_str,
-                    price=filled_price_str,
-                )
+                symbol = str(order.symbol)
+                pending = self._pending_entries[order_id]
+                filled_qty = Decimal(str(order.filled_qty or "0"))
+                fill_price = Decimal(str(order.filled_avg_price or "0"))
+                booked = self._entry_filled.get(order_id, Decimal("0"))
+                delta = filled_qty - booked
+
+                # Book only the newly-filled portion. Everything below used to
+                # run on every poll (~10s) for as long as the order stayed
+                # PARTIALLY_FILLED — days, for a crypto GTC order — re-logging
+                # and re-Telegramming the same fill until the alert flood 429'd
+                # Telegram and killed alerting outright.
+                if delta > 0:
+                    self._entry_filled[order_id] = filled_qty
+                    log_fill(
+                        order_id=order_id,
+                        symbol=symbol,
+                        filled_qty=str(delta),
+                        filled_avg_price=str(fill_price),
+                    )
+                    await alerts.alert_fill(
+                        symbol=symbol,
+                        side=str(order.side.value) if order.side else "",
+                        qty=str(delta),
+                        price=str(fill_price),
+                    )
+                    self._cost_basis[symbol] = (fill_price, pending.direction)
+                    qty_signed = delta if order.side == OrderSide.BUY else -delta
+                    self._risk.record_fill(
+                        symbol=symbol, qty=qty_signed, realised_pnl=Decimal("0"),
+                    )
+                    # A partial fill is a real position, not a pending entry.
+                    # Leaving it pending burned an open-position slot forever.
+                    self._risk.clear_pending(symbol)
+                    # Protect the shares that actually filled — this used to be
+                    # gated on a full fill, so a partial entry rode unprotected.
+                    await self._ensure_protective_stop(
+                        symbol, pending, filled_qty, fill_price,
+                    )
+
                 if status == OrderStatus.FILLED:
-                    pending = self._pending_entries[order_id]
-                    direction = pending.direction
-                    stop_price = pending.stop_price
-                    symbol = str(order.symbol)
-                    fill_price = Decimal(filled_price_str)
-                    fill_qty = Decimal(filled_qty_str)
-                    self._cost_basis[symbol] = (fill_price, direction)
                     self._journal.record_entry(
                         symbol=symbol,
-                        side=direction.value,
-                        qty=fill_qty,
+                        side=pending.direction.value,
+                        qty=filled_qty,
                         price=fill_price,
                         reason="entry fill",
                     )
-                    qty_signed = fill_qty if order.side == OrderSide.BUY else -fill_qty
-                    self._risk.record_fill(symbol=symbol, qty=qty_signed, realised_pnl=Decimal("0"))
                     self._risk.clear_pending(symbol)
                     del self._pending_entries[order_id]
-
-                    # Place the configured protective stop as a real broker order
-                    # (stocks only). Crypto can't use broker stops on Alpaca, so it
-                    # relies on the strategy's own exit signals instead.
-                    if self._place_broker_stop and stop_price > 0:
-                        stop_side = OrderSide.SELL if direction == Direction.BUY else OrderSide.BUY
-                        try:
-                            stop_order = await self._broker.submit_stop_order(
-                                symbol=symbol,
-                                qty=fill_qty,
-                                side=stop_side,
-                                stop_price=stop_price,
-                            )
-                            stop_id = str(stop_order.id)
-                            self._pending_stops[stop_id] = symbol
-                            # Track for trailing: the stop will ratchet up toward
-                            # the peak price on each poll_positions cycle.
-                            self._open[symbol] = _OpenPos(
-                                direction=direction, qty=fill_qty,
-                                stop_order_id=stop_id, stop_price=stop_price,
-                                peak=fill_price,
-                            )
-                        except Exception as exc:
-                            log_error(
-                                "protective_stop_failed",
-                                symbol=symbol,
-                                stop=str(stop_price),
-                                error=str(exc),
-                            )
+                    self._entry_filled.pop(order_id, None)
 
             elif status in (OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED):
                 log_rejection(
@@ -383,8 +397,62 @@ class OrderExecutor:
                     symbol=str(order.symbol),
                     reason=str(status.value),
                 )
+                # Any quantity that did fill before the cancel is already booked
+                # above and stays tracked; only the unfilled remainder is released.
                 self._risk.clear_pending(str(order.symbol))
                 del self._pending_entries[order_id]
+                self._entry_filled.pop(order_id, None)
+
+    async def _ensure_protective_stop(
+        self,
+        symbol: str,
+        pending: _PendingEntry,
+        qty: Decimal,
+        fill_price: Decimal,
+    ) -> None:
+        """Place, or resize, the broker-side protective stop for the filled qty.
+
+        Stocks only — Alpaca rejects stop orders for crypto, which relies on the
+        strategy's own exit signals instead.
+        """
+        if not self._place_broker_stop or pending.stop_price <= 0 or qty <= 0:
+            return
+
+        existing = self._open.get(symbol)
+        if existing is not None and existing.qty == qty and existing.stop_order_id:
+            return   # already protected at this size
+
+        is_long = pending.direction == Direction.BUY
+        stop_side = OrderSide.SELL if is_long else OrderSide.BUY
+        try:
+            if existing is not None and existing.stop_order_id:
+                # Resize: cancel the undersized stop before replacing it.
+                try:
+                    await self._broker.cancel_order(existing.stop_order_id)
+                except Exception:
+                    pass
+                self._pending_stops.pop(existing.stop_order_id, None)
+
+            stop_order = await self._broker.submit_stop_order(
+                symbol=symbol, qty=qty, side=stop_side,
+                stop_price=pending.stop_price,
+            )
+            stop_id = str(stop_order.id)
+            self._pending_stops[stop_id] = symbol
+            # Track for trailing: the stop ratchets toward the peak price on
+            # each poll_positions cycle. Preserve the peak across a resize.
+            self._open[symbol] = _OpenPos(
+                direction=pending.direction, qty=qty,
+                stop_order_id=stop_id, stop_price=pending.stop_price,
+                peak=existing.peak if existing is not None else fill_price,
+            )
+        except Exception as exc:
+            log_error(
+                "protective_stop_failed",
+                symbol=symbol,
+                stop=str(pending.stop_price),
+                error=str(exc),
+            )
 
     async def _poll_stops(self) -> None:
         for order_id in list(self._pending_stops.keys()):
@@ -435,4 +503,16 @@ class OrderExecutor:
                     self._open.pop(symbol, None)
 
             elif status in (OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED):
-                del self._pending_stops[order_id]
+                symbol = self._pending_stops.pop(order_id, "")
+                op = self._open.get(symbol)
+                if op is not None and op.stop_order_id == order_id:
+                    # Stock stops are TimeInForce.DAY, so every protective stop
+                    # dies at that day's close. The position kept a dead
+                    # stop_order_id, so _raise_stop's cancel threw on every bar
+                    # and the stop was never re-created — an overnight position
+                    # silently lost its broker protection and its trailing stop
+                    # stopped ratcheting. Mark it unprotected; poll_positions
+                    # re-places it on the next cycle.
+                    op.stop_order_id = ""
+                    log_error("protective_stop_expired", symbol=symbol,
+                              status=str(status.value), stop=str(op.stop_price))
