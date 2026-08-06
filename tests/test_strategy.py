@@ -289,3 +289,60 @@ def test_range_stop_uses_opposite_range_side_for_short() -> None:
     sig = s.on_bar(_bar("SPY", 467, 468, 464, 466, 9, 50))
     assert sig is not None
     assert sig.stop_price == Decimal("476.00")
+
+
+# ── ORB session re-anchoring (long-running regression) ───────────────────────
+
+def _bar_on(day: int, symbol: str, open_: float, high: float, low: float,
+            close: float, hour: int, minute: int) -> Any:
+    """Like _bar, but on an explicit day in June 2024 so sessions can differ."""
+    ts_et = datetime(2024, 6, day, hour, minute, 0, tzinfo=ET)
+    b = MagicMock()
+    b.symbol = symbol
+    b.open = open_
+    b.high = high
+    b.low = low
+    b.close = close
+    b.volume = 100_000
+    b.timestamp = ts_et.astimezone(timezone.utc)
+    return b
+
+
+def test_orb_range_reanchors_on_a_new_session(orb: ORBStrategy) -> None:
+    """reset_day() is only reached from main.py's stocks day-rollover, which
+    itself only runs while bars flow through the market-hours gate. An ORB bot
+    on a 24/7 asset class kept day 1's range forever — range_complete stayed
+    True and both *_triggered latched after the first breakout, so it traded
+    exactly once and then went silent with nothing in the log."""
+    orb.on_bar(_bar_on(3, "SPY", 100, 110, 100, 105, 9, 31))
+    orb.on_bar(_bar_on(3, "SPY", 105, 106, 104, 105, 9, 50))   # past the 15m range
+    day1 = orb._state["SPY"]
+    assert day1.range_complete is True
+    assert day1.range_high == Decimal("110")
+
+    # Next session, with no reset_day() call at all.
+    orb.on_bar(_bar_on(4, "SPY", 200, 205, 195, 200, 9, 31))
+    day2 = orb._state["SPY"]
+
+    assert day2.session != day1.session
+    assert day2.range_high == Decimal("205"), "still using the previous session's range"
+    assert day2.range_low == Decimal("195")
+    assert day2.range_complete is False
+
+
+def test_orb_latched_triggers_do_not_survive_the_session(orb: ORBStrategy) -> None:
+    orb.on_bar(_bar_on(3, "SPY", 100, 110, 100, 105, 9, 31))
+    orb._state["SPY"].long_triggered = True
+    orb._state["SPY"].short_triggered = True
+
+    orb.on_bar(_bar_on(4, "SPY", 100, 110, 100, 105, 9, 31))
+
+    assert orb._state["SPY"].long_triggered is False
+    assert orb._state["SPY"].short_triggered is False
+
+
+def test_orb_keeps_state_within_one_session(orb: ORBStrategy) -> None:
+    orb.on_bar(_bar_on(3, "SPY", 100, 110, 100, 105, 9, 31))
+    orb.on_bar(_bar_on(3, "SPY", 105, 120, 90, 105, 9, 33))
+    assert orb._state["SPY"].range_high == Decimal("120")
+    assert orb._state["SPY"].range_low == Decimal("90")

@@ -52,6 +52,7 @@ class Strategy(abc.ABC):
 
 @dataclass
 class _ORBState:
+    session: object = None       # ET date the opening range belongs to
     range_high: Decimal = field(default_factory=lambda: Decimal("0"))
     range_low: Decimal = field(default_factory=lambda: Decimal("Inf"))
     range_complete: bool = False
@@ -110,6 +111,18 @@ class ORBStrategy(Strategy):
 
         bar_et = self._to_et(bar)
         bar_time = bar_et.time()
+
+        # Re-anchor on the bar's own session date rather than trusting an
+        # external reset_day(). reset_day() is only reached from main.py's
+        # stocks day-rollover, which itself only runs while bars are flowing
+        # through the market-hours gate — so an ORB bot on a 24/7 asset class
+        # kept day 1's range forever: range_complete stayed True and both
+        # *_triggered flags latched after the first breakout, so it traded
+        # exactly once and then went silent with nothing in the log.
+        session = bar_et.date()
+        if state.session != session:
+            state = _ORBState(session=session)
+            self._state[symbol] = state
 
         if not (MARKET_OPEN <= bar_time < MARKET_CLOSE):
             return None
