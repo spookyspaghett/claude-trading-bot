@@ -8,6 +8,11 @@ from pathlib import Path
 JOURNAL_PATH = Path("memory/trade_journal.jsonl")
 SUMMARIES_DIR = Path("memory/daily_summaries")
 
+# Safety cap on the in-memory exit buffer. It is drained by write_daily_summary,
+# which a bot whose day never rolls over may not reach for a long time — the list
+# used to grow for the entire process lifetime.
+MAX_TRACKED_EXITS = 1000
+
 
 class TradeJournal:
     def __init__(self) -> None:
@@ -56,9 +61,18 @@ class TradeJournal:
         }
         self._append(record)
         self._today_exits.append(record)
+        if len(self._today_exits) > MAX_TRACKED_EXITS:
+            del self._today_exits[:-MAX_TRACKED_EXITS]
 
     def write_daily_summary(self, total_pnl: Decimal) -> None:
-        today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+        # Date the summary by the session it actually covers, not by "now".
+        # end_of_day() runs at the START of the following trading day, so using
+        # the clock filed every summary under the next day's name — from day two
+        # onward each file held the previous day's trades.
+        if self._today_exits:
+            today = str(self._today_exits[-1]["ts"])[:10]
+        else:
+            today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
         lines = [
             f"# Daily Summary {today}",
             "",

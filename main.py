@@ -294,6 +294,10 @@ async def run(slug: str | None = None) -> None:
                 # let it re-enter on top. Strategies that need a session reset
                 # key it off the bar's own date instead (see ORB/VWAP).
                 if current_day is not None and wall_now.date() != current_day:
+                    # Drains the journal's exit buffer (which otherwise grew for
+                    # the whole process lifetime) and files the day's summary
+                    # while daily_pnl still holds the closing day's number.
+                    executor.end_of_day()
                     risk.reset_daily_limit()
                     log_info("new_trading_day", date=str(wall_now.date()))
                 current_day = wall_now.date()
