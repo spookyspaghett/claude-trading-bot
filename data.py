@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from alpaca.data.live import CryptoDataStream, StockDataStream
 from alpaca.data.models import Bar
+
+from logger import log_error, log_info
 
 if TYPE_CHECKING:
     from config_loader import Config
@@ -47,7 +49,7 @@ class BarAggregator:
         bars = self._bars
         ts = bars[0].timestamp
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         return AggregatedBar(
             symbol=self._symbol,
             open=Decimal(str(bars[0].open)),
@@ -73,6 +75,7 @@ class DataFeed:
             s: BarAggregator(s, 5) for s in config.symbols
         }
         self._connected: bool = False
+        self._last_bar_at: datetime | None = None
 
     @property
     def queue(self) -> asyncio.Queue[Bar | AggregatedBar]:
@@ -82,7 +85,14 @@ class DataFeed:
     def connected(self) -> bool:
         return self._connected
 
+    @property
+    def last_bar_at(self) -> datetime | None:
+        """When the last bar arrived. A connected-but-silent stream is the
+        failure mode that used to be invisible, so surface it for the heartbeat."""
+        return self._last_bar_at
+
     async def _on_bar(self, bar: Bar) -> None:
+        self._last_bar_at = datetime.now(tz=UTC)
         try:
             self._queue.put_nowait(bar)
         except asyncio.QueueFull:
@@ -97,6 +107,16 @@ class DataFeed:
                 except asyncio.QueueFull:
                     pass
 
+    @staticmethod
+    def _close(stream: Any) -> None:
+        """Best-effort: close the websocket so we don't leak a connection."""
+        if stream is None:
+            return
+        try:
+            stream.stop()
+        except Exception:
+            pass
+
     async def run(self) -> None:
         """Connect and stream bars; reconnect with exponential backoff on failure."""
         delay = 1.0
@@ -110,22 +130,29 @@ class DataFeed:
                     stream = StockDataStream(self._api_key, self._secret_key)
                 stream.subscribe_bars(self._on_bar, *self._symbols)
                 self._connected = True
+                log_info("data_feed_connected", symbols=self._symbols)
                 delay = 1.0
                 # stream.run() is a *synchronous* wrapper that calls
                 # asyncio.run() / loop.run_until_complete() internally — it
                 # cannot be awaited from inside a running event loop.
                 # _run_forever() is the actual async coroutine underneath.
                 await stream._run_forever()
+                # Returning normally means the server closed the socket (session
+                # end, server-side disconnect). This used to fall straight through
+                # to a zero-delay reconnect while `connected` stayed True — so a
+                # dead feed reported itself healthy and hammered Alpaca until it
+                # hit the connection limit, and the bot went silent for good.
+                log_error("data_feed_disconnected", reason="stream_closed")
             except asyncio.CancelledError:
                 self._connected = False
-                # Best-effort: close the websocket so we don't leak a connection
-                if stream is not None:
-                    try:
-                        stream.stop()
-                    except Exception:
-                        pass
+                self._close(stream)
                 raise
-            except Exception:
-                self._connected = False
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, max_delay)
+            except Exception as exc:
+                # Was swallowed silently: an auth failure or connection-limit
+                # rejection left no trace anywhere the operator could see it.
+                log_error("data_feed_error", error=str(exc))
+            self._connected = False
+            self._close(stream)
+            log_info("data_feed_reconnecting", retry_in_s=delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)

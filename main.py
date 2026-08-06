@@ -25,6 +25,11 @@ MARKET_CLOSE: time = time(16, 0)
 _ORDER_POLL_INTERVAL = 100    # poll orders every ~10 s
 _POSITION_POLL_INTERVAL = 600 # check positions for loser cut every ~60 s
 
+# Proof-of-life cadence. A bot can legitimately go a whole session without a
+# signal; without this the dashboard feed looked dead on a healthy bot and there
+# was no way to tell that apart from a stalled data feed.
+_HEARTBEAT_SECONDS = 900
+
 
 def _is_market_hours(now: datetime) -> bool:
     t = now.astimezone(ET).time()
@@ -267,9 +272,43 @@ async def run(slug: str | None = None) -> None:
 
     tick         = 0
     current_day: date | None = None
+    last_heartbeat: datetime | None = None
 
     try:
         while not shutdown_event.is_set():
+            # Both checks below are wall-clock paced, not tick-paced: `tick` only
+            # advances when the bar queue is empty, so tick-based timing would
+            # drift with volume — and both must keep working when no bars arrive
+            # at all, which is exactly the case a stalled feed produces.
+            wall_now = datetime.now(tz=ET)
+
+            # Crypto never reaches the stocks day-rollover further down (no market
+            # hours, no daily flatten), so its "daily" loss limit was really a
+            # since-process-start limit — a bot up for a week would flatten and
+            # exit on the summed losses of several days. Reset the P&L counters
+            # only; crypto positions ride overnight, so the book must stand.
+            if is_crypto:
+                # NOTE: deliberately not strategy.reset_day() — EMA's reset
+                # clears `position`, which for crypto (nothing is flattened at
+                # rollover) would desync the strategy from a live position and
+                # let it re-enter on top. Strategies that need a session reset
+                # key it off the bar's own date instead (see ORB/VWAP).
+                if current_day is not None and wall_now.date() != current_day:
+                    risk.reset_daily_limit()
+                    log_info("new_trading_day", date=str(wall_now.date()))
+                current_day = wall_now.date()
+
+            if (last_heartbeat is None
+                    or (wall_now - last_heartbeat).total_seconds() >= _HEARTBEAT_SECONDS):
+                last_heartbeat = wall_now
+                last_bar = feed.last_bar_at
+                log_info("heartbeat",
+                         strategy=config.strategy.name,
+                         connected=feed.connected,
+                         market_open=is_crypto or _is_market_hours(wall_now),
+                         last_bar=last_bar.isoformat() if last_bar else "none",
+                         daily_pnl=str(risk.daily_pnl))
+
             if risk.poll_kill_switch():
                 log_info("kill_switch_triggered")
                 await alerts.alert_kill_switch()

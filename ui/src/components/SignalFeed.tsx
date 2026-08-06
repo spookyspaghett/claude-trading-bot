@@ -13,6 +13,28 @@ const EVENT_STYLES: Record<string, { label: string; color: string; accent: strin
   order_rejected:  { label: 'REJECT',  color: 'text-red-400 bg-red-950 border-red-800',          accent: 'border-l-red-500/70' },
   startup:         { label: 'START',   color: 'text-slate-400 bg-slate-800 border-slate-600',    accent: 'border-l-slate-600' },
   shutting_down:   { label: 'STOP',    color: 'text-slate-400 bg-slate-800 border-slate-600',    accent: 'border-l-slate-600' },
+  heartbeat:       { label: 'ALIVE',   color: 'text-slate-500 bg-slate-900 border-slate-700',    accent: 'border-l-transparent' },
+  donchian_eod_scan_start: { label: 'SCAN',  color: 'text-indigo-400 bg-indigo-950 border-indigo-800', accent: 'border-l-indigo-500/70' },
+  donchian_eod_scan_done:  { label: 'PLAN',  color: 'text-indigo-400 bg-indigo-950 border-indigo-800', accent: 'border-l-indigo-500/70' },
+  data_feed_connected:     { label: 'FEED',  color: 'text-cyan-400 bg-cyan-950 border-cyan-800',  accent: 'border-l-cyan-500/70' },
+  data_feed_disconnected:  { label: 'FEED',  color: 'text-red-400 bg-red-950 border-red-800',     accent: 'border-l-red-500/70' },
+}
+
+/** Compact one-liner for events that carry no symbol/price. */
+function summarise(evt: LogEvent): string | null {
+  if (evt.event === 'heartbeat') {
+    const bits = [evt.connected === false ? 'feed down' : 'feed ok']
+    if (typeof evt.tracked === 'number') bits.push(`${evt.tracked} tracked`)
+    if (typeof evt.daily_pnl === 'string') bits.push(`P&L ${evt.daily_pnl}`)
+    if (typeof evt.last_scan === 'string') bits.push(`scan ${evt.last_scan}`)
+    return bits.join(' · ')
+  }
+  if (evt.event === 'donchian_eod_scan_done') {
+    const entries = Array.isArray(evt.entries) ? evt.entries.length : 0
+    const exits = Array.isArray(evt.exits) ? evt.exits.length : 0
+    return `queued ${entries} entr${entries === 1 ? 'y' : 'ies'}, ${exits} exit${exits === 1 ? '' : 's'}`
+  }
+  return null
 }
 
 function eventStyle(event: string) {
@@ -55,7 +77,9 @@ function EventRow({ evt }: { evt: LogEvent }) {
       <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded border ${style.color}`}>
         {style.label}
       </span>
-      <span className="text-slate-300 min-w-0 break-words">{details.join(' · ') || evt.event}</span>
+      <span className="text-slate-300 min-w-0 break-words">
+        {details.join(' · ') || summarise(evt) || evt.event}
+      </span>
     </div>
   )
 }
