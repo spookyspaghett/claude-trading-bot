@@ -7,9 +7,13 @@ export function usePolling<T>(
   url: string,
   intervalMs: number,
   defaultValue: T,
-): { data: T; error: string | null; refresh: () => void } {
+): { data: T; error: string | null; loaded: boolean; refresh: () => void } {
   const [data, setData] = useState<T>(defaultValue)
   const [error, setError] = useState<string | null>(null)
+  // Whether a request has EVER succeeded. Without it, callers cannot tell
+  // `defaultValue` apart from real data — an account endpoint returning 502
+  // rendered as a confident $0.00 equity.
+  const [loaded, setLoaded] = useState(false)
   const mountedRef = useRef(true)
   // Guards against a slow endpoint: without these, a new request fired every
   // interval regardless of whether the previous one had returned. Requests
@@ -36,6 +40,7 @@ export function usePolling<T>(
       if (mountedRef.current && seq === seqRef.current) {
         setData(json)
         setError(null)
+        setLoaded(true)
       }
     } catch (err) {
       if (mountedRef.current && seq === seqRef.current) {
@@ -62,7 +67,7 @@ export function usePolling<T>(
     }
   }, [fetchData, intervalMs])
 
-  return { data, error, refresh: fetchData }
+  return { data, error, loaded, refresh: fetchData }
 }
 
 export async function apiPost(url: string, body?: unknown): Promise<unknown> {

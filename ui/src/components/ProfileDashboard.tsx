@@ -35,7 +35,9 @@ export default function ProfileDashboard({ slug, name, assetClass, symbols, stra
     `/api/bot/status${q}`, 5_000, DEFAULT_STATUS,
   )
   const { data: positions } = usePolling<Position[]>(`/api/positions${q}`, 10_000, [])
-  const { data: account } = usePolling<Account>(`/api/account${q}`, 30_000, DEFAULT_ACCOUNT)
+  const {
+    data: account, error: accountError, loaded: accountLoaded,
+  } = usePolling<Account>(`/api/account${q}`, 30_000, DEFAULT_ACCOUNT)
   const { data: equityHistory } = usePolling<EquityPoint[]>(`/api/equity-history${q}`, 300_000, [])
   const { data: pnlData } = usePolling<PnLPoint[]>(`/api/pnl-intraday${q}`, 60_000, [])
 
@@ -59,7 +61,13 @@ export default function ProfileDashboard({ slug, name, assetClass, symbols, stra
           </span>
           <span className="font-bold text-slate-100 text-sm">{name}</span>
         </div>
-        <StatusBar botStatus={botStatus} wsConnected={wsConnected} account={account} />
+        <StatusBar
+          botStatus={botStatus}
+          wsConnected={wsConnected}
+          account={account}
+          accountLoaded={accountLoaded}
+          accountError={accountError}
+        />
         <div className="flex-1" />
         <div className="flex items-center gap-2 shrink-0">
           <BotControls botStatus={botStatus} onStatusChange={handleStatusChange} slug={slug} />
