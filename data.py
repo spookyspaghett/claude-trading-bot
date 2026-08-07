@@ -107,6 +107,36 @@ class DataFeed:
                 except asyncio.QueueFull:
                     pass
 
+    async def _watch_connection(self, stream: Any) -> None:
+        """Mirror the stream's real connection state into ``_connected``.
+
+        ``subscribe_bars()`` only registers a handler — nothing has touched the
+        network yet — so setting ``_connected`` around it reported a healthy
+        feed before a single packet moved. Worse, alpaca-py's ``_run_forever()``
+        wraps its connect/consume cycle in its own ``while True`` with a
+        catch-all ``except Exception`` and an ``asyncio.sleep(0)`` retry, so it
+        never returns and never raises: with DNS down it spins internally while
+        we reported the feed as connected indefinitely and logged nothing.
+
+        Its ``_running`` flag is only set after the socket is open and the
+        subscribe message is acknowledged, which is the closest thing to ground
+        truth available.
+        """
+        was: bool | None = None
+        try:
+            while True:
+                running = bool(getattr(stream, "_running", False))
+                self._connected = running
+                if running != was:
+                    if running:
+                        log_info("data_feed_connected", symbols=self._symbols)
+                    elif was is not None:
+                        log_error("data_feed_disconnected", reason="stream_dropped")
+                    was = running
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            raise
+
     @staticmethod
     def _close(stream: Any) -> None:
         """Best-effort: close the websocket so we don't leak a connection."""
@@ -129,14 +159,21 @@ class DataFeed:
                 else:
                     stream = StockDataStream(self._api_key, self._secret_key)
                 stream.subscribe_bars(self._on_bar, *self._symbols)
-                self._connected = True
-                log_info("data_feed_connected", symbols=self._symbols)
+                log_info("data_feed_starting", symbols=self._symbols)
                 delay = 1.0
-                # stream.run() is a *synchronous* wrapper that calls
-                # asyncio.run() / loop.run_until_complete() internally — it
-                # cannot be awaited from inside a running event loop.
-                # _run_forever() is the actual async coroutine underneath.
-                await stream._run_forever()
+                # _connected is driven by the watcher, not by reaching this
+                # line — subscribing establishes no connection at all.
+                watcher = asyncio.create_task(
+                    self._watch_connection(stream), name="data-feed-watch",
+                )
+                try:
+                    # stream.run() is a *synchronous* wrapper that calls
+                    # asyncio.run() / loop.run_until_complete() internally — it
+                    # cannot be awaited from inside a running event loop.
+                    # _run_forever() is the actual async coroutine underneath.
+                    await stream._run_forever()
+                finally:
+                    watcher.cancel()
                 # Returning normally means the server closed the socket (session
                 # end, server-side disconnect). This used to fall straight through
                 # to a zero-delay reconnect while `connected` stayed True — so a

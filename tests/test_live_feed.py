@@ -144,3 +144,79 @@ async def test_stream_error_is_logged(monkeypatch) -> None:  # noqa: ANN001
 
     assert "data_feed_error" in events   # was swallowed silently
     assert feed.connected is False
+
+
+@pytest.mark.asyncio
+async def test_connected_tracks_the_stream_not_the_subscribe_call(monkeypatch) -> None:  # noqa: ANN001
+    """`subscribe_bars()` touches no network, and alpaca-py's `_run_forever()`
+    swallows every connection error in its own retry loop without returning or
+    raising. Setting `connected` around subscribe therefore reported a healthy
+    feed forever — with DNS down the bot logged `data_feed_connected` and never
+    said another word about it.
+    """
+    events: list[str] = []
+
+    class _Stream:
+        def __init__(self, *_a, **_kw) -> None:
+            self._running = False       # never comes up, e.g. DNS is dead
+
+        def subscribe_bars(self, _handler, *_symbols) -> None:  # noqa: ANN001
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        async def _run_forever(self) -> None:
+            await asyncio.sleep(10)     # spins internally, never returns
+
+    monkeypatch.setattr(data_mod, "StockDataStream", _Stream)
+    monkeypatch.setattr(data_mod, "log_error", lambda e, **kw: events.append(e))
+    monkeypatch.setattr(data_mod, "log_info", lambda e, **kw: events.append(e))
+
+    feed = data_mod.DataFeed(_cfg())
+    task = asyncio.create_task(feed.run())
+    await asyncio.sleep(0.05)
+
+    assert feed.connected is False, "reported connected while the stream was down"
+    assert "data_feed_connected" not in events
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_connected_flips_once_the_stream_is_really_up(monkeypatch) -> None:  # noqa: ANN001
+    events: list[str] = []
+
+    class _Stream:
+        def __init__(self, *_a, **_kw) -> None:
+            self._running = False
+
+        def subscribe_bars(self, _handler, *_symbols) -> None:  # noqa: ANN001
+            pass
+
+        def stop(self) -> None:
+            pass
+
+        async def _run_forever(self) -> None:
+            await asyncio.sleep(0.05)
+            self._running = True        # socket open + subscribe acked
+            await asyncio.sleep(10)
+
+    monkeypatch.setattr(data_mod, "StockDataStream", _Stream)
+    monkeypatch.setattr(data_mod, "log_error", lambda e, **kw: events.append(e))
+    monkeypatch.setattr(data_mod, "log_info", lambda e, **kw: events.append(e))
+
+    feed = data_mod.DataFeed(_cfg())
+    task = asyncio.create_task(feed.run())
+    await asyncio.sleep(0.05)
+    assert feed.connected is False
+    await asyncio.sleep(1.2)            # watcher polls once a second
+
+    assert feed.connected is True
+    assert "data_feed_connected" in events
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
