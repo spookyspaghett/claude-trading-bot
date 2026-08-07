@@ -310,3 +310,45 @@ def test_expired_stop_is_replaced_not_abandoned() -> None:
 
     assert len(broker.stop_orders) == 2, "expired stop was not re-placed"
     assert ex._open["AAPL"].stop_order_id != ""
+
+
+def test_failed_flatten_keeps_tracking_the_position() -> None:
+    """If close_all_positions() fails, those positions are still live at the
+    broker. Forgetting them means nothing trails their stop, nothing cuts them,
+    and the next signal opens a second position on top of the first."""
+    broker = FakeBroker()
+    ex = _executor(broker, place_broker_stop=True)
+
+    async def go() -> None:
+        await ex.process_signal(_partial_signal())
+        await ex.poll_order_status()
+        assert "AAPL" in ex._open
+
+        async def _boom() -> None:
+            raise RuntimeError("Temporary failure in name resolution")
+        broker.close_all_positions = _boom       # type: ignore[assignment]
+
+        await ex.flatten_all()
+
+    asyncio.run(go())
+
+    assert "AAPL" in ex._open, "dropped a position the broker never closed"
+    assert "AAPL" in ex._cost_basis
+    assert ex._risk.open_symbols == ["AAPL"]
+
+
+def test_successful_flatten_releases_everything() -> None:
+    broker = FakeBroker()
+    ex = _executor(broker, place_broker_stop=True)
+
+    async def go() -> None:
+        await ex.process_signal(_partial_signal())
+        await ex.poll_order_status()
+        await ex.flatten_all()
+
+    asyncio.run(go())
+
+    assert ex._open == {}
+    assert ex._cost_basis == {}
+    assert ex._risk.open_symbols == []      # risk book released too
+    assert ex._risk.check_new_order("MSFT")[0] is True
