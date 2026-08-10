@@ -31,6 +31,57 @@ _POSITION_POLL_INTERVAL = 600 # check positions for loser cut every ~60 s
 _HEARTBEAT_SECONDS = 900
 
 
+# A bot started before the host's resolver is usable (reboot, VPN restart, a
+# stale /etc/resolv.conf) can't reach the broker or the data feed, but every
+# failure surfaces as a per-call exception a minute apart with no statement of
+# the common cause. Name the problem once, up front, and wait for it to clear.
+_DNS_PREFLIGHT_TIMEOUT = 120.0
+
+
+def _api_hosts(live: bool) -> list[str]:
+    return [
+        "api.alpaca.markets" if live else "paper-api.alpaca.markets",
+        "data.alpaca.markets",
+    ]
+
+
+async def _await_dns(hosts: list[str], timeout: float = _DNS_PREFLIGHT_TIMEOUT) -> bool:
+    """Block until every host resolves, or `timeout` elapses.
+
+    Returns True if resolution succeeded. On failure the caller still proceeds:
+    the run loop retries broker calls anyway, and refusing to start would just
+    trade one silent failure for another.
+    """
+    import socket
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    delay = 2.0
+    announced = False
+
+    while True:
+        try:
+            for host in hosts:
+                await asyncio.to_thread(socket.getaddrinfo, host, 443,
+                                        socket.AF_UNSPEC, socket.SOCK_STREAM)
+            if announced:
+                log_info("dns_ready", hosts=hosts)
+            return True
+        except OSError as exc:
+            remaining = deadline - loop.time()
+            if not announced:
+                # Logged once, not once per retry — the point is a single clear
+                # statement, not another per-minute stream of the same error.
+                log_error("dns_unavailable", hosts=hosts, error=str(exc),
+                          waiting_seconds=int(timeout))
+                announced = True
+            if remaining <= 0:
+                log_error("dns_preflight_gave_up", hosts=hosts, error=str(exc))
+                return False
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, 15.0)
+
+
 def _is_market_hours(now: datetime) -> bool:
     t = now.astimezone(ET).time()
     return MARKET_OPEN <= t < MARKET_CLOSE
@@ -213,6 +264,9 @@ async def run(slug: str | None = None) -> None:
     log_info("startup", symbols=config.symbols, live=config.live,
              asset_class=config.asset_class,
              mode="paper" if not config.live else "LIVE")
+
+    # Before anything talks to Alpaca. Covers the donchian hand-off below too.
+    await _await_dns(_api_hosts(config.live))
 
     # Donchian is a separate daily-bar loop — hand off and return
     if config.strategy.name == "donchian":
