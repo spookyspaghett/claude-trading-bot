@@ -9,7 +9,7 @@ import PnLChart from './PnLChart'
 import EquityChart from './EquityChart'
 import SignalFeed from './SignalFeed'
 import ConfigEditor from './ConfigEditor'
-import PriceChart from './PriceChart'
+import ChartGrid from './ChartGrid'
 import DonchianPanel from './DonchianPanel'
 import ErrorBoundary from './ErrorBoundary'
 import type { Account, AssetClass, BotStatus, EquityPoint, PnLPoint, Position } from '../types'
@@ -77,7 +77,9 @@ export default function ProfileDashboard({ slug, name, assetClass, symbols, stra
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {symbols.length > 0 && (
-          <ErrorBoundary label="Price chart"><PriceChart slug={slug} symbols={symbols} /></ErrorBoundary>
+          <div className="lg:col-span-2">
+            <ChartGrid slug={slug} symbols={symbols} />
+          </div>
         )}
         {strategy === 'donchian' && (
           <ErrorBoundary label="Donchian panel"><DonchianPanel slug={slug} /></ErrorBoundary>

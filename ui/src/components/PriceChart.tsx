@@ -8,6 +8,13 @@ import {
 interface Props {
   slug: string
   symbols: string[]
+  /** Seeds the pane on mount; later changes are owned by the pane itself. */
+  initialSymbol?: string
+  initialTimeframe?: string
+  /** Chart body height in px — shrinks as more panes share the tab. */
+  height?: number
+  /** Fires when the user retargets this pane, so the parent can persist it. */
+  onConfigChange?: (cfg: { symbol: string; timeframe: string }) => void
 }
 
 interface Bar { time: number; open: number; high: number; low: number; close: number; volume: number }
@@ -47,9 +54,25 @@ function pivotLevels(bars: Bar[], strength: number): { resistance?: number; supp
   return { resistance, support }
 }
 
-export default function PriceChart({ slug, symbols }: Props) {
-  const [symbol, setSymbol] = useState(symbols[0] ?? '')
-  const [timeframe, setTimeframe] = useState('15Min')
+export default function PriceChart({
+  slug, symbols, initialSymbol, initialTimeframe, height = 360, onConfigChange,
+}: Props) {
+  const [symbol, setSymbol] = useState(
+    initialSymbol && symbols.includes(initialSymbol) ? initialSymbol : symbols[0] ?? '',
+  )
+  const [timeframe, setTimeframe] = useState(
+    initialTimeframe && TIMEFRAMES.includes(initialTimeframe) ? initialTimeframe : '15Min',
+  )
+
+  // Persist through the parent rather than an effect on [symbol, timeframe]:
+  // the callback identity changes every parent render, which in an effect would
+  // write on every render instead of on actual user changes.
+  function retarget(next: { symbol?: string; timeframe?: string }) {
+    const merged = { symbol: next.symbol ?? symbol, timeframe: next.timeframe ?? timeframe }
+    if (next.symbol !== undefined) setSymbol(next.symbol)
+    if (next.timeframe !== undefined) setTimeframe(next.timeframe)
+    onConfigChange?.(merged)
+  }
   const [data, setData] = useState<BarsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -61,6 +84,10 @@ export default function PriceChart({ slug, symbols }: Props) {
   const slowRef = useRef<ISeriesApi<'Line'> | null>(null)
   const regimeRef = useRef<ISeriesApi<'Line'> | null>(null)
   const priceLinesRef = useRef<IPriceLine[]>([])
+  // The chart is created once (deps `[]`), so height is read through a ref to
+  // avoid tearing down and rebuilding the whole chart on a resize.
+  const heightRef = useRef(height)
+  heightRef.current = height
 
   // Keep the selected symbol valid as profiles/symbols change.
   useEffect(() => {
@@ -90,7 +117,7 @@ export default function PriceChart({ slug, symbols }: Props) {
     if (!el) return
     const chart = createChart(el, {
       width: el.clientWidth,
-      height: 360,
+      height: heightRef.current,
       layout: { background: { type: ColorType.Solid, color: '#0f172a' }, textColor: '#94a3b8', fontSize: 11 },
       grid: { vertLines: { color: '#1e293b' }, horzLines: { color: '#1e293b' } },
       timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#334155' },
@@ -110,6 +137,12 @@ export default function PriceChart({ slug, symbols }: Props) {
     ro.observe(el)
     return () => { ro.disconnect(); chart.remove(); chartRef.current = null }
   }, [])
+
+  // Apply height changes to the live chart (pane count changed).
+  useEffect(() => {
+    chartRef.current?.applyOptions({ height })
+    chartRef.current?.timeScale().fitContent()
+  }, [height])
 
   // Push data into the chart when it changes.
   useEffect(() => {
@@ -172,20 +205,20 @@ export default function PriceChart({ slug, symbols }: Props) {
   const ind = data?.indicators
 
   return (
-    <div className="card flex flex-col overflow-hidden lg:col-span-2">
+    <div className="card flex flex-col overflow-hidden">
       <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
             <CandlestickChart size={14} className="text-amber-400" />
             Price
           </h2>
-          <select value={symbol} onChange={e => setSymbol(e.target.value)}
+          <select value={symbol} onChange={e => retarget({ symbol: e.target.value })}
             className="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500">
             {symbols.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
             {TIMEFRAMES.map(tf => (
-              <button key={tf} onClick={() => setTimeframe(tf)}
+              <button key={tf} onClick={() => retarget({ timeframe: tf })}
                 className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors ${
                   timeframe === tf ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
                 }`}>
@@ -205,7 +238,7 @@ export default function PriceChart({ slug, symbols }: Props) {
         )}
       </div>
       <div className="relative">
-        <div ref={containerRef} className="w-full" style={{ height: 360 }} />
+        <div ref={containerRef} className="w-full" style={{ height }} />
         {loading && <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm bg-slate-900/40">Loading…</div>}
         {error && <div className="absolute inset-0 flex items-center justify-center text-red-400 text-sm px-4 text-center">{error}</div>}
         {!loading && !error && data && data.bars.length === 0 && (
