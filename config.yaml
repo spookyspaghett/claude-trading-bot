@@ -61,6 +61,10 @@ strategy:
   donchian:
     lookback_days: 40            # N-day channel: buy breakout above N-day high
     trend_ma: 200                # Only trade in direction of N-day MA (0 = off)
+    # Turtle-style asymmetric exit: leave on a break of this SHORTER channel
+    # (40-in / 20-out). 0 = exit on the entry channel, which gives back far too
+    # much open profit before reacting. Typical: lookback_days / 2.
+    exit_lookback: 20
     trailing_activation_pct: 1.0 # Activate trailing stop after X% profit
     trailing_pct: 8.0            # Trail X% below the peak price
     long_only: true              # Only take long (buy) positions
