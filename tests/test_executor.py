@@ -352,3 +352,41 @@ def test_successful_flatten_releases_everything() -> None:
     assert ex._cost_basis == {}
     assert ex._risk.open_symbols == []      # risk book released too
     assert ex._risk.check_new_order("MSFT")[0] is True
+
+
+# ── broker-outage logging (a resolver failure used to log identically forever) ─
+
+def test_poll_failures_throttle_then_report_recovery(monkeypatch: Any) -> None:
+    """A sustained outage logs on the 1st and every 10th failure, not all 25 —
+    and announces recovery once the broker answers again."""
+    broker = FakeBroker()
+    ex = _executor(broker, place_broker_stop=True)
+
+    errors: list[dict[str, Any]] = []
+    infos: list[str] = []
+    monkeypatch.setattr("executor.log_error",
+                        lambda event, **kw: errors.append({"event": event, **kw}))
+
+    async def boom() -> list[Any]:
+        raise OSError("Temporary failure in name resolution")
+
+    broker.get_all_positions = boom  # type: ignore[assignment]
+    for _ in range(25):
+        asyncio.run(ex.poll_positions())
+
+    assert ex._poll_failures == 25
+    assert [e["consecutive_failures"] for e in errors] == [1, 10, 20]
+
+    # Broker comes back: one recovery line, counter cleared.
+    import executor as executor_mod
+    monkeypatch.setattr(executor_mod._log, "info",
+                        lambda event, **kw: infos.append(event))
+    broker._positions = []
+
+    async def ok() -> list[Any]:
+        return []
+
+    broker.get_all_positions = ok  # type: ignore[assignment]
+    asyncio.run(ex.poll_positions())
+    assert ex._poll_failures == 0
+    assert "poll_positions_recovered" in infos

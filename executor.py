@@ -78,6 +78,10 @@ class OrderExecutor:
         self._journal = TradeJournal()
         self._advisor = SignalAdvisor() if enable_claude_filter else None
         self._research: dict[str, SymbolResearch] = {}
+        # Consecutive get_all_positions failures, so a sustained broker outage
+        # reports as one escalating condition instead of an identical line every
+        # 60s that buries everything else in the feed.
+        self._poll_failures = 0
 
     def set_research(self, research: dict[str, SymbolResearch]) -> None:
         self._research = research
@@ -271,8 +275,17 @@ class OrderExecutor:
         try:
             positions = await self._broker.get_all_positions()
         except Exception as exc:
-            log_error("poll_positions_failed", error=str(exc))
+            self._poll_failures += 1
+            # First failure, then every 10th (~10 min at the 60s poll cadence).
+            if self._poll_failures == 1 or self._poll_failures % 10 == 0:
+                log_error("poll_positions_failed", error=str(exc),
+                          consecutive_failures=self._poll_failures,
+                          unmanaged_positions=len(self._open))
             return
+        if self._poll_failures:
+            _log.info("poll_positions_recovered",
+                      after_failures=self._poll_failures)
+            self._poll_failures = 0
 
         # Feed equity + total unrealized PnL to the risk manager so the daily
         # loss limit trips on deep drawdown and exposure is capped to equity (#9).

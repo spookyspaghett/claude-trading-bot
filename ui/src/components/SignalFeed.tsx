@@ -37,11 +37,19 @@ function summarise(evt: LogEvent): string | null {
   return null
 }
 
+/** Truncating to 6 chars turned `poll_positions_failed` into "POLL_P". Use the
+ *  event's own initials instead, so unmapped events stay identifiable. */
+function fallbackLabel(event: string): string {
+  const words = event.split('_').filter(Boolean)
+  if (words.length === 1) return words[0].toUpperCase().slice(0, 6)
+  return words.map(w => w[0]).join('').toUpperCase().slice(0, 6)
+}
+
 function eventStyle(event: string) {
   if (EVENT_STYLES[event]) return EVENT_STYLES[event]
   const isError = event.includes('error') || event.includes('failed')
   return {
-    label: event.toUpperCase().slice(0, 6),
+    label: isError ? 'ERROR' : fallbackLabel(event),
     color: isError ? 'text-red-400 bg-red-950 border-red-800' : 'text-slate-400 bg-slate-800 border-slate-600',
     accent: isError ? 'border-l-red-500/70' : 'border-l-transparent',
   }
@@ -62,6 +70,11 @@ function EventRow({ evt }: { evt: LogEvent }) {
   const style = eventStyle(evt.event)
   const details: string[] = []
 
+  // Unmapped errors all share one "ERROR" badge, so the row has to say which
+  // operation it was — the message alone doesn't ("Max retries exceeded…").
+  if (!EVENT_STYLES[evt.event] && (evt.event.includes('failed') || evt.event.includes('error'))) {
+    details.push(evt.event.replace(/_/g, ' '))
+  }
   if (evt.symbol) details.push(evt.symbol)
   if (evt.direction) details.push(evt.direction)
   if (evt.price) details.push(`@ ${evt.price}`)
