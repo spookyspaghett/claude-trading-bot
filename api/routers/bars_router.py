@@ -15,6 +15,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 router = APIRouter()
 
+# alpaca-py's historical clients share the RESTClient that builds its request
+# options without a `timeout` (see broker.py) — so a half-open socket blocks the
+# worker thread forever, /api/bars never answers, and the chart sits on "Loading…"
+# with nothing to say why. BrokerClient got this bound in 94f479b; the data
+# clients never did.
+DATA_REQUEST_TIMEOUT = 30.0
+
 # Supported timeframes → (TimeFrame args, minutes per bar) resolved lazily to
 # avoid importing alpaca at module import time in non-bar code paths.
 _TF: dict[str, tuple[int, str, int]] = {
@@ -172,14 +179,31 @@ async def get_bars(
     is_crypto = cfg.asset_class == "crypto"
 
     try:
-        bars = await asyncio.to_thread(
-            _fetch_bars_sync, cfg.alpaca_api_key, cfg.alpaca_secret_key,
-            is_crypto, sym, tf_amt, tf_unit, mins, limit,
+        bars = await asyncio.wait_for(
+            asyncio.to_thread(
+                _fetch_bars_sync, cfg.alpaca_api_key, cfg.alpaca_secret_key,
+                is_crypto, sym, tf_amt, tf_unit, mins, limit,
+            ),
+            timeout=DATA_REQUEST_TIMEOUT,
         )
-        client = get_trading_client(profile)
-        markers = await asyncio.to_thread(_fetch_markers_sync, client, sym, mins)
+    except TimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Alpaca bars request exceeded {DATA_REQUEST_TIMEOUT:.0f}s",
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    # Markers are decoration. A trading-API failure here used to 502 the whole
+    # response and blank a chart whose bars had already loaded fine.
+    try:
+        client = get_trading_client(profile)
+        markers = await asyncio.wait_for(
+            asyncio.to_thread(_fetch_markers_sync, client, sym, mins),
+            timeout=DATA_REQUEST_TIMEOUT,
+        )
+    except Exception:
+        markers = []
 
     # Only keep markers within the visible window.
     if bars:
