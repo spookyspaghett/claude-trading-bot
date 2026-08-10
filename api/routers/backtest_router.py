@@ -184,7 +184,10 @@ async def run_backtest_upload(
             volume_filter_days=max(0, volume_filter_days),
             trailing_activation_pct=max(0.0, trailing_activation_pct),
             trailing_pct=max(0.0, trailing_pct),
-            starting_equity=Decimal(str(max(100.0, starting_equity))),
+            # Floor is 0, not 100: small-account sizing (a €50 book) is exactly
+            # the case worth backtesting, and the metrics already guard against
+            # a zero-equity divisor.
+            starting_equity=Decimal(str(max(0.0, starting_equity))),
             strategy=strategy if strategy in ("auto", "trend_sr", "ema", "vwap_revert") else "auto",
             ma_fast=max(2, ma_fast),
             ma_slow=max(3, ma_slow),

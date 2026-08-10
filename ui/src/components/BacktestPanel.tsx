@@ -66,6 +66,15 @@ function fmtPct(n: number) {
   return (n >= 0 ? '+' : '') + n.toFixed(2) + '%'
 }
 
+/** Starting-equity input parser. The old `parseFloat(x) || 500000` treated 0 as
+ *  absent and snapped back to the default, so a 0 floor could never be entered —
+ *  and neither could any value the user was mid-way through typing toward.
+ *  Only a genuinely non-numeric field falls back. */
+function parseEquity(raw: string): number {
+  const v = parseFloat(raw)
+  return Number.isFinite(v) ? Math.max(0, v) : 500000
+}
+
 function formatDate(ts: number) {
   const d = new Date(ts * 1000)
   return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} '${String(d.getFullYear()).slice(2)}`
@@ -445,10 +454,10 @@ export default function BacktestPanel() {
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Starting equity ($)</label>
-                <input type="number" min={100} step={100}
+                <input type="number" min={0} step="any"
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
                   value={startingEquity}
-                  onChange={e => setStartingEquity(Math.max(100, parseFloat(e.target.value) || 500000))}
+                  onChange={e => setStartingEquity(parseEquity(e.target.value))}
                 />
               </div>
               <div>
@@ -605,10 +614,10 @@ export default function BacktestPanel() {
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Starting equity ($)</label>
-                <input type="number" min={100} step={100}
+                <input type="number" min={0} step="any"
                   className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
                   value={startingEquity}
-                  onChange={e => setStartingEquity(Math.max(100, parseFloat(e.target.value) || 500000))}
+                  onChange={e => setStartingEquity(parseEquity(e.target.value))}
                 />
               </div>
               <button
