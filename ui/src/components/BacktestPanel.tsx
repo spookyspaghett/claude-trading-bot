@@ -130,6 +130,9 @@ export default function BacktestPanel() {
   const [trailingActivationPct, setTrailingActivationPct] = useState(2.0)
   const [trailingPct, setTrailingPct] = useState(8.0)
   const [startingEquity, setStartingEquity] = useState(500000)
+  // 0 = fall back to config.yaml's risk block (which the UI can't otherwise edit).
+  const [maxPositionUsd, setMaxPositionUsd] = useState(0)
+  const [stopLossPct, setStopLossPct] = useState(0)
   const [strategy, setStrategy] = useState<'auto' | 'trend_sr' | 'ema' | 'vwap_revert'>('auto')
   const [slippageBps, setSlippageBps] = useState(0)
   const [commission, setCommission] = useState(0)
@@ -195,6 +198,8 @@ export default function BacktestPanel() {
       form.append('min_adx', String(minAdx))
       form.append('volume_mult', String(volumeMult))
       form.append('exit_lookback', String(exitLookback))
+      form.append('max_position_usd', String(maxPositionUsd))
+      form.append('stop_loss_pct', String(stopLossPct))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -459,6 +464,24 @@ export default function BacktestPanel() {
                   value={startingEquity}
                   onChange={e => setStartingEquity(parseEquity(e.target.value))}
                 />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">Position size ($)</label>
+                <input type="number" min={0} step="any"
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
+                  value={maxPositionUsd}
+                  onChange={e => setMaxPositionUsd(Math.max(0, parseFloat(e.target.value) || 0))}
+                />
+                <p className="text-xs text-slate-600 mt-0.5">0 = use config.yaml</p>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">% stop (no ATR)</label>
+                <input type="number" min={0} step="any"
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
+                  value={stopLossPct}
+                  onChange={e => setStopLossPct(Math.max(0, parseFloat(e.target.value) || 0))}
+                />
+                <p className="text-xs text-slate-600 mt-0.5">Only used when ATR stop is off</p>
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">CSV or Excel file</label>

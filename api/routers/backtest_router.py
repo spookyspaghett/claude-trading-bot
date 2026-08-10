@@ -142,6 +142,13 @@ async def run_backtest_upload(
     volume_mult: float = Form(0.0),
     volume_ma: int = Form(20),
     exit_lookback: int = Form(0),
+    # Position sizing and the percentage-stop fallback used to come only from
+    # the root config.yaml, which the dashboard's Config editor cannot reach —
+    # it writes to profiles. That left the single most result-defining setting
+    # (how big each position is) unreachable from the UI running the backtest.
+    # 0 means "leave the config.yaml value alone".
+    max_position_usd: float = Form(0.0),
+    stop_loss_pct: float = Form(0.0),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -169,11 +176,21 @@ async def run_backtest_upload(
         bars = parse_bars_from_bytes(content, filename, sym)
 
         cfg = load_config(PROJECT_ROOT / "config.yaml")
+
+        risk_overrides: dict[str, Any] = {}
+        if max_position_usd > 0:
+            risk_overrides["max_position_usd"] = Decimal(str(max_position_usd))
+        if stop_loss_pct > 0:
+            risk_overrides["stop_loss_pct"] = Decimal(str(stop_loss_pct))
+        risk_config = (
+            cfg.risk.model_copy(update=risk_overrides) if risk_overrides else cfg.risk
+        )
+
         result = await run_backtest_from_file(
             symbol=sym,
             bars=bars,
             orb_config=cfg.strategy.orb,
-            risk_config=cfg.risk,
+            risk_config=risk_config,
             lookback=max(2, lookback_days),
             long_only=long_only,
             trend_ma=max(0, trend_ma),
