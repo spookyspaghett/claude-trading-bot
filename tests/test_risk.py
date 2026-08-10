@@ -295,3 +295,54 @@ def test_reset_daily_limit_keeps_open_positions() -> None:
     assert r.should_flatten_all is False
     assert r.daily_pnl == Decimal("0")
     assert r.open_symbols == ["BTC/USD"]   # still held
+
+
+# ── small-account sizing (the €50 book that used to lock itself out) ──────────
+
+def _small() -> RiskManager:
+    """max_position_usd deliberately set at/above the account's equity."""
+    return RiskManager(
+        max_position_usd=Decimal("50"),
+        stop_loss_pct=Decimal("1"),
+        daily_loss_limit_usd=Decimal("15"),
+        max_open_positions=1,
+    )
+
+
+def test_flat_account_below_max_position_can_still_open() -> None:
+    """Equity dipping under max_position_usd used to refuse every entry with
+    'aggregate exposure would exceed account equity' while holding nothing."""
+    rm = _small()
+    rm.set_account_equity(Decimal("48"))
+    allowed, reason = rm.check_new_order("AAPL")
+    assert allowed is True, reason
+
+
+def test_sizing_clamps_to_equity_not_configured_max() -> None:
+    rm = _small()
+    rm.set_account_equity(Decimal("48"))
+    # $30 stock: budget is equity (48), not the configured 50 → 1 whole share.
+    assert rm.compute_qty(Decimal("30")) == Decimal("1")
+    # Fractional (crypto) sizes against the same clamped budget.
+    assert rm.compute_qty(Decimal("30"), fractional=True) == Decimal("1.600000")
+
+
+def test_second_position_still_capped_by_equity() -> None:
+    # max_open_positions raised so the exposure cap is what blocks, not the count.
+    rm = RiskManager(
+        max_position_usd=Decimal("50"),
+        stop_loss_pct=Decimal("1"),
+        daily_loss_limit_usd=Decimal("15"),
+        max_open_positions=4,
+    )
+    rm.set_account_equity(Decimal("48"))
+    rm.record_fill(symbol="AAPL", qty=Decimal("1"), realised_pnl=Decimal("0"))
+    allowed, reason = rm.check_new_order("MSFT")
+    assert allowed is False
+    assert "exposure" in reason
+
+
+def test_unknown_equity_falls_back_to_configured_max() -> None:
+    """Before the first account poll there's nothing to clamp against."""
+    rm = _small()
+    assert rm.compute_qty(Decimal("10")) == Decimal("5")   # 50 / 10

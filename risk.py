@@ -27,6 +27,22 @@ class RiskManager:
         self._daily_limit_hit: bool = False
         self._kill_switch_triggered: bool = False
 
+    def _position_budget(self) -> Decimal:
+        """Notional we can actually commit to one position.
+
+        Sizing used to use the configured max unconditionally, while
+        `check_new_order` capped `max_position_usd × positions` against equity.
+        On an account smaller than `max_position_usd` those two disagreed: the
+        very first entry projected more than the account held and was refused,
+        so a book whose equity dipped below the configured max went permanently
+        silent — every signal rejected as "aggregate exposure would exceed
+        account equity", with nothing open to explain it. Size to what the
+        account can afford instead of refusing to trade at all.
+        """
+        if self._account_equity is None or self._account_equity <= Decimal("0"):
+            return self._max_position_usd
+        return min(self._max_position_usd, self._account_equity)
+
     def compute_qty(self, price: Decimal, fractional: bool = False) -> Decimal:
         """Return position size for the given price and max position size.
 
@@ -35,7 +51,7 @@ class RiskManager:
         """
         if price <= Decimal("0"):
             return Decimal("0")
-        raw = self._max_position_usd / price
+        raw = self._position_budget() / price
         if fractional:
             return raw.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
         return Decimal(int(raw))
@@ -83,7 +99,7 @@ class RiskManager:
         # Aggregate-exposure cap: don't let total committed notional exceed equity (#9).
         if self._account_equity is not None:
             new_count = len(active) + (0 if symbol in active else 1)
-            projected = self._max_position_usd * new_count
+            projected = self._position_budget() * new_count
             if projected > self._account_equity:
                 return False, "aggregate exposure would exceed account equity"
         return True, ""
