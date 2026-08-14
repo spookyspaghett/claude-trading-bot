@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Play, Square, RotateCcw, ChevronDown, ChevronUp, Terminal } from 'lucide-react'
+import { Play, Square, RotateCcw, ChevronDown, ChevronUp, Terminal, X } from 'lucide-react'
 
 import type { BotStatus } from '../types'
 
@@ -74,15 +74,15 @@ export default function BotControls({ botStatus, onStatusChange, slug }: Props) 
           disabled={loading || botStatus.running}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-green-700 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          <Play size={14} />
-          Start
+          <Play size={14} aria-hidden="true" />
+          {loading ? 'Starting…' : 'Start'}
         </button>
         <button
           onClick={() => void call('stop')}
           disabled={loading || !botStatus.running}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          <Square size={14} />
+          <Square size={14} aria-hidden="true" />
           Stop
         </button>
         <button
@@ -90,7 +90,7 @@ export default function BotControls({ botStatus, onStatusChange, slug }: Props) 
           disabled={loading}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          <RotateCcw size={14} />
+          <RotateCcw size={14} aria-hidden="true" />
           Restart
         </button>
 
@@ -100,13 +100,13 @@ export default function BotControls({ botStatus, onStatusChange, slug }: Props) 
             onClick={() => setShowLog(v => !v)}
             className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium bg-red-900/60 text-red-300 hover:bg-red-900 transition-colors"
           >
-            <Terminal size={12} />
-            Crash log
-            {showLog ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            <Terminal size={12} aria-hidden="true" />
+            Crash Log
+            {showLog ? <ChevronUp size={12} aria-hidden="true" /> : <ChevronDown size={12} aria-hidden="true" />}
           </button>
         )}
 
-        {error && <span className="text-xs text-red-400">{error}</span>}
+        <span aria-live="polite" className="text-xs text-red-400">{error}</span>
       </div>
 
       {/* Crash log panel */}
@@ -114,16 +114,17 @@ export default function BotControls({ botStatus, onStatusChange, slug }: Props) 
         <div className="mt-1 rounded-lg border border-red-800/50 bg-slate-950 overflow-hidden">
           <div className="flex items-center justify-between px-3 py-1.5 bg-red-900/30 border-b border-red-800/50">
             <span className="text-xs font-semibold text-red-300 flex items-center gap-1.5">
-              <Terminal size={11} /> Bot crash output
+              <Terminal size={11} aria-hidden="true" /> Bot Crash Output
             </span>
             <button
               onClick={() => setShowLog(false)}
-              className="text-slate-500 hover:text-slate-300 text-xs"
+              aria-label="Close crash log"
+              className="text-slate-500 hover:text-slate-300 text-xs rounded px-1"
             >
-              ✕
+              <X size={12} aria-hidden="true" />
             </button>
           </div>
-          <pre className="p-3 text-xs text-red-200 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto leading-relaxed">
+          <pre className="p-3 text-xs text-red-200 font-mono whitespace-pre-wrap break-all max-h-48 overflow-y-auto overscroll-contain leading-relaxed">
             {stderrLog}
           </pre>
         </div>

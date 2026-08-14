@@ -35,14 +35,24 @@ function Tip({ text }: { text: string }) {
   const [show, setShow] = useState(false)
   return (
     <span className="relative inline-flex items-center ml-1">
-      <HelpCircle
-        size={12}
-        className="text-slate-600 hover:text-slate-400 cursor-help transition-colors"
+      {/* A real button, so the explanation is reachable by keyboard and read
+          out by screen readers instead of being hover-only. It sits inside a
+          <label>, so the click must not fall through and focus the field. */}
+      <button
+        type="button"
+        aria-label={`Help: ${text}`}
+        aria-expanded={show}
+        onClick={e => { e.preventDefault(); setShow(v => !v) }}
         onMouseEnter={() => setShow(true)}
         onMouseLeave={() => setShow(false)}
-      />
+        onFocus={() => setShow(true)}
+        onBlur={() => setShow(false)}
+        className="inline-flex items-center rounded text-slate-600 hover:text-slate-400 cursor-help transition-colors"
+      >
+        <HelpCircle size={12} aria-hidden="true" />
+      </button>
       {show && (
-        <span className="absolute z-50 left-5 top-0 w-56 rounded-lg bg-slate-700 border border-slate-600 text-xs text-slate-200 p-2.5 shadow-xl leading-relaxed pointer-events-none">
+        <span role="tooltip" className="absolute z-50 left-5 top-0 w-56 rounded-lg bg-slate-700 border border-slate-600 text-xs text-slate-200 p-2.5 shadow-xl leading-relaxed pointer-events-none">
           {text}
         </span>
       )}
@@ -53,11 +63,13 @@ function Tip({ text }: { text: string }) {
 // ── Field label with tooltip ──────────────────────────────────────────────────
 
 function Label({ children, tip }: { children: React.ReactNode; tip: string }) {
+  // A <span>, not a <label>: the surrounding <label> already owns the control,
+  // and nesting labels would break the association it provides.
   return (
-    <label className="flex items-center text-xs text-slate-500 mb-1">
+    <span className="flex items-center text-xs text-slate-500 mb-1">
       {children}
       <Tip text={tip} />
-    </label>
+    </span>
   )
 }
 
@@ -86,7 +98,7 @@ function NumInput({
   return (
     <input
       type="number" step={step} min={min} max={max} disabled={disabled}
-      className="mt-1 w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40"
+      className="field mt-1 tabular-nums disabled:opacity-40"
       value={value}
       onChange={e => onChange(parseFloat(e.target.value) || 0)}
     />
@@ -182,7 +194,7 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
             title="Symbols"
             tip="The list of ticker symbols the bot will watch and potentially trade. Use comma-separated values. Add more symbols to increase the number of simultaneous opportunities — especially useful for Donchian mode."
           >
-            <div>
+            <label className="block">
               <Label tip="Comma-separated list of stock tickers. The bot scans all of these for signals and can hold up to max_open_positions at once.">
                 Watch list
               </Label>
@@ -193,7 +205,7 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                 placeholder="SPY, QQQ, AAPL, MSFT, NVDA, TSLA"
               />
               <p className="text-[10px] text-slate-600 mt-1">Donchian tip: add 8–12 symbols for daily trade opportunities</p>
-            </div>
+            </label>
             <div className="flex items-center gap-2">
               <input
                 type="checkbox" id="live-mode"
@@ -213,30 +225,30 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
             title="Risk Parameters"
             tip="Controls how much money the bot risks per trade and per day. These limits apply to ALL strategies."
           >
-            <div>
+            <label className="block">
               <Label tip="Maximum dollar value of a single position. E.g. $50,000 means the bot buys at most $50k worth of stock per trade.">
                 Max position size (USD)
               </Label>
               <NumInput value={cfg.risk.max_position_usd} step={1000} onChange={v => setRisk('max_position_usd', v)} />
-            </div>
-            <div>
+            </label>
+            <label className="block">
               <Label tip="Stop-loss percentage for ORB/EMA intraday strategies. E.g. 1.0 means the stop is placed 1% below the entry price. Not used by Donchian (which uses ATR-based stops).">
                 Stop loss % <span className="text-slate-600 ml-1">(ORB / EMA only)</span>
               </Label>
               <NumInput value={cfg.risk.stop_loss_pct} step={0.1} min={0.1} onChange={v => setRisk('stop_loss_pct', v)} />
-            </div>
-            <div>
+            </label>
+            <label className="block">
               <Label tip="If total daily P&L drops below this amount (negative), the bot stops trading for the rest of the day and closes all positions. Protects against runaway losses.">
                 Daily loss limit (USD)
               </Label>
               <NumInput value={cfg.risk.daily_loss_limit_usd} step={50} onChange={v => setRisk('daily_loss_limit_usd', v)} />
-            </div>
-            <div>
+            </label>
+            <label className="block">
               <Label tip="Maximum number of positions open simultaneously. With Donchian across many symbols, set this to 4–8 to allow multiple concurrent swing trades.">
                 Max open positions
               </Label>
               <NumInput value={cfg.risk.max_open_positions} step={1} min={1} max={20} onChange={v => setRisk('max_open_positions', v)} />
-            </div>
+            </label>
           </Section>
 
           {/* ── Strategy selector ─────────────────────────────────────────── */}
@@ -267,14 +279,14 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                 <p className="text-xs text-slate-500 leading-relaxed">
                   <span className="text-slate-300 font-medium">Opening Range Breakout</span> — waits during the first N minutes after open to define the high/low range, then buys a breakout above the range or shorts below it. Exits by EOD. Best for volatile stocks on active mornings.
                 </p>
-                <div>
+                <label className="block">
                   <Label tip="How many minutes after 09:30 ET the bot waits to build the 'opening range'. 15 minutes (09:30–09:45) is the classic setting. A wider range means fewer but stronger signals.">
                     Opening range (minutes)
                   </Label>
                   <NumInput value={cfg.strategy.orb.opening_range_minutes} min={1} max={60}
                     onChange={v => setOrb('opening_range_minutes', v)} />
-                </div>
-                <div>
+                </label>
+                <label className="block">
                   <Label tip="Limit orders guarantee your entry price but may not fill if the price moves away. Market orders fill immediately at the current price — better for fast breakouts.">
                     Entry order type
                   </Label>
@@ -286,8 +298,8 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     <option value="limit">Limit (fill at exact price)</option>
                     <option value="market">Market (fill immediately)</option>
                   </select>
-                </div>
-                <div>
+                </label>
+                <label className="block">
                   <Label tip="Time (Eastern) at which the bot closes all open positions regardless of P&L. Must be before 16:00. 15:50 gives 10 minutes of buffer before market close.">
                     EOD exit time (ET, HH:MM)
                   </Label>
@@ -297,16 +309,16 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     onChange={e => setOrb('eod_exit_time', e.target.value)}
                     placeholder="15:50"
                   />
-                </div>
-                <div>
+                </label>
+                <label className="block">
                   <Label tip="The close must clear the range by this % of the range HEIGHT before a breakout counts. Filters the classic 1-cent false breakout. E.g. 10 = needs 10% of the range beyond the edge. 0 = any tick over triggers (legacy).">
                     Breakout buffer (% of range, 0 = off)
                   </Label>
                   <NumInput value={cfg.strategy.orb.buffer_pct ?? 0} step={5} min={0} max={100}
                     onChange={v => setOrb('buffer_pct', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 10 — skips marginal breakouts</p>
-                </div>
-                <div>
+                </label>
+                <label className="block">
                   <Label tip="'Range' puts the stop at the opposite side of the opening range — the natural invalidation level (capped by Stop loss % so risk never exceeds it). 'Fixed %' is the legacy stop unrelated to the range.">
                     Stop placement
                   </Label>
@@ -318,15 +330,15 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     <option value="pct">Fixed % (legacy)</option>
                     <option value="range">Opposite side of range (recommended)</option>
                   </select>
-                </div>
-                <div>
+                </label>
+                <label className="block">
                   <Label tip="Skip the whole day when the opening range is wider than this % of price — huge ranges (news days) give breakouts terrible risk/reward. 0 = trade every day.">
                     Max range width (% of price, 0 = off)
                   </Label>
                   <NumInput value={cfg.strategy.orb.max_range_pct ?? 0} step={0.25} min={0} max={50}
                     onChange={v => setOrb('max_range_pct', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Typical: 1.5–2 for large caps</p>
-                </div>
+                </label>
               </div>
             )}
 
@@ -337,22 +349,22 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                   <span className="text-slate-300 font-medium">EMA Crossover</span> — buys when the fast EMA crosses above the slow EMA (golden cross), sells on the reverse (death cross). Can trade multiple times per day. Exits all positions by EOD.
                 </p>
                 <div className="grid grid-cols-2 gap-2">
-                  <div>
+                  <label className="block">
                     <Label tip="The fast EMA reacts quickly to price changes. A smaller number (e.g. 9) catches trends early but generates more false signals. Common: 9, 12, 20.">
                       Fast EMA (minutes)
                     </Label>
                     <NumInput value={cfg.strategy.ema.fast_period} min={2} max={200}
                       onChange={v => setEma('fast_period', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="The slow EMA filters out noise. Must be larger than the fast EMA. Common pairings: 9/21, 12/26, 20/50.">
                       Slow EMA (minutes)
                     </Label>
                     <NumInput value={cfg.strategy.ema.slow_period} min={3} max={500}
                       onChange={v => setEma('slow_period', v)} />
-                  </div>
+                  </label>
                 </div>
-                <div>
+                <label className="block">
                   <Label tip="Market orders are strongly recommended for EMA crossovers — the signal is time-sensitive and a limit order risks not filling during a fast move.">
                     Entry order type
                   </Label>
@@ -364,8 +376,8 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     <option value="market">Market (recommended for EMA)</option>
                     <option value="limit">Limit</option>
                   </select>
-                </div>
-                <div>
+                </label>
+                <label className="block">
                   <Label tip="Time (Eastern) at which the bot closes all open positions regardless of P&L.">
                     EOD exit time (ET, HH:MM)
                   </Label>
@@ -375,15 +387,15 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     onChange={e => setEma('eod_exit_time', e.target.value)}
                     placeholder="15:50"
                   />
-                </div>
-                <div>
+                </label>
+                <label className="block">
                   <Label tip="Hysteresis band: the fast EMA must exceed the slow by this % before a cross counts (and dip the same % below to flip back). Kills the rapid-fire flip-flop trades of a flat market. 0 = every raw cross trades (legacy).">
                     Min separation (% , 0 = off)
                   </Label>
                   <NumInput value={cfg.strategy.ema.min_separation_pct ?? 0} step={0.01} min={0} max={10}
                     onChange={v => setEma('min_separation_pct', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Typical: 0.05–0.1 on 1-min bars — big churn reduction</p>
-                </div>
+                </label>
               </div>
             )}
 
@@ -402,50 +414,50 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                   <p>Position held until stop hit or channel reversal</p>
                 </div>
 
-                <div>
+                <label className="block">
                   <Label tip="The strategy buys when today's closing price is higher than the highest high of the last N days. A larger lookback (e.g. 40) means fewer but stronger/more meaningful breakouts. Backtested optimum: 40 days.">
                     Lookback days (channel width)
                   </Label>
                   <NumInput value={cfg.strategy.donchian.lookback_days} min={5} max={200}
                     onChange={v => setDon('lookback_days', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 40 (best backtested result)</p>
-                </div>
+                </label>
 
-                <div>
+                <label className="block">
                   <Label tip="Turtle-style asymmetric exit: leave the position when price breaks this SHORTER channel instead of the entry channel. Exiting on the same 40-day channel you entered on gives back far too much open profit. 0 = exit on the entry channel (legacy). Must be smaller than the lookback.">
                     Exit channel days (0 = same as entry)
                   </Label>
                   <NumInput value={cfg.strategy.donchian.exit_lookback ?? 0} min={0} max={200}
                     onChange={v => setDon('exit_lookback', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 20 with a 40-day entry (classic 40-in/20-out)</p>
-                </div>
+                </label>
 
-                <div>
+                <label className="block">
                   <Label tip="Only buy when the price is above its N-day moving average. This filters out signals during bear markets (e.g. 2008, 2022). Set to 200 for the classic 200-day MA filter. Set to 0 to disable.">
                     Trend MA filter (0 = off)
                   </Label>
                   <NumInput value={cfg.strategy.donchian.trend_ma} min={0} max={500}
                     onChange={v => setDon('trend_ma', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 200 (200-day moving average)</p>
-                </div>
+                </label>
 
-                <div>
+                <label className="block">
                   <Label tip="After the position gains this % in profit, the trailing stop activates. Until then, only the initial ATR-based stop is used. E.g. 1.0 means: once the trade is up 1%, start trailing.">
                     Trailing stop activates after (%)
                   </Label>
                   <NumInput value={cfg.strategy.donchian.trailing_activation_pct} step={0.5} min={0} max={20}
                     onChange={v => setDon('trailing_activation_pct', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 1.0% — locks in profit early</p>
-                </div>
+                </label>
 
-                <div>
+                <label className="block">
                   <Label tip="Once the trailing stop activates, the stop price follows the highest price reached, keeping a distance of this %. E.g. 8 means the stop stays 8% below the peak. Lets winners run while protecting profits.">
                     Trailing stop distance (%)
                   </Label>
                   <NumInput value={cfg.strategy.donchian.trailing_pct} step={0.5} min={1} max={30}
                     onChange={v => setDon('trailing_pct', v)} />
                   <p className="text-[10px] text-slate-600 mt-0.5">Recommended: 8% — wide enough for daily swings</p>
-                </div>
+                </label>
 
                 <div className="flex items-start gap-2 pt-0.5">
                   <input
@@ -474,92 +486,92 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                   or an ATR distance, then trail the peak. Built for 24/7 crypto; long-only is recommended.
                 </p>
                 <div className="grid grid-cols-2 gap-2">
-                  <div>
+                  <label className="block">
                     <Label tip="Timeframe the strategy trades on. The live 1-minute feed is aggregated into candles of this many minutes (e.g. 15). Higher = less noise, fewer/cleaner trades. This is the single biggest lever against whipsaw.">
                       Timeframe (minutes)
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.bar_minutes} min={1} max={1440}
                       onChange={v => setTsr('bar_minutes', v)} />
                     <p className="text-[10px] text-slate-600 mt-0.5">15 = 15-minute candles (recommended)</p>
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Long-term regime filter: only take longs when price is above this MA (and below it for shorts). Set to 200 to avoid buying in downtrends — the bot stays flat instead. 0 disables it.">
                       Regime MA <span className="text-slate-600">(0 = off)</span>
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.regime_ma} min={0} max={1000}
                       onChange={v => setTsr('regime_ma', v)} />
                     <p className="text-[10px] text-slate-600 mt-0.5">200 = only trade with the trend</p>
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Fast moving-average period. Must be smaller than the slow MA. The fast>slow relationship defines the uptrend filter that gates long entries.">
                       Fast MA
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.ma_fast} min={2} max={400}
                       onChange={v => setTsr('ma_fast', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Slow moving-average period. Entries only fire when the fast MA is above this (longs) — keeps you trading with the trend.">
                       Slow MA
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.ma_slow} min={3} max={800}
                       onChange={v => setTsr('ma_slow', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="How many bars back to scan for swing-high / swing-low pivots that define resistance and support levels.">
                       Pivot lookback
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.pivot_lookback} min={2} max={200}
                       onChange={v => setTsr('pivot_lookback', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Bars required on each side of a pivot to confirm it. Higher = fewer but stronger S/R levels. 3 is a good default.">
                       Pivot strength
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.pivot_strength} min={1} max={20}
                       onChange={v => setTsr('pivot_strength', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Lookback period for the Average True Range used to size the initial stop distance.">
                       ATR period
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.atr_period} min={2} max={100}
                       onChange={v => setTsr('atr_period', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Initial stop = entry − ATR × this multiplier (bounded by the nearest support). Larger = more room, fewer stop-outs.">
                       ATR multiplier
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.atr_mult} step={0.1} min={0.1} max={20}
                       onChange={v => setTsr('atr_mult', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="The close must clear resistance by this fraction of ATR before entering, so marginal pokes above a level don't trigger a trade. 0.25 = a quarter-ATR buffer.">
                       Breakout buffer (×ATR)
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.breakout_buffer_atr} step={0.05} min={0} max={5}
                       onChange={v => setTsr('breakout_buffer_atr', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="After an exit, wait this many candles before re-entering the same symbol. Prevents instant re-buy churn on a chopping level. In 15m candles, 4 = one hour.">
                       Re-entry cooldown (bars)
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.cooldown_bars} step={1} min={0} max={100}
                       onChange={v => setTsr('cooldown_bars', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Once the trade is up this %, the trailing stop activates and follows the peak.">
                       Trail activates after (%)
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.trailing_activation_pct} step={0.5} min={0} max={50}
                       onChange={v => setTsr('trailing_activation_pct', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Once active, the stop trails this % below the highest price reached. Wider = lets winners run further.">
                       Trailing distance (%)
                     </Label>
                     <NumInput value={cfg.strategy.trend_sr.trailing_pct} step={0.5} min={0} max={50}
                       onChange={v => setTsr('trailing_pct', v)} />
-                  </div>
+                  </label>
                 </div>
                 <div className="flex items-start gap-2 pt-0.5">
                   <input
@@ -580,34 +592,34 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                     Entry filters <span className="text-slate-500 font-normal">(optional — 0 = off · backtest before enabling)</span>
                   </p>
                   <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                    <div>
+                    <label className="block">
                       <Label tip="Require Wilder's ADX ≥ this before taking a breakout. ADX measures trend STRENGTH (0–100): below ~20 the market is choppy. Skips breakouts with no real trend behind them, so a rejected breakout is dropped entirely (not just delayed). 0 = off. 20–25 typical.">
                         Min ADX
                       </Label>
                       <NumInput value={cfg.strategy.trend_sr.min_adx} step={1} min={0} max={100}
                         onChange={v => setTsr('min_adx', v)} />
-                    </div>
-                    <div>
+                    </label>
+                    <label className="block">
                       <Label tip="Smoothing window for the ADX calculation. Standard is 14. Only matters when Min ADX > 0.">
                         ADX period
                       </Label>
                       <NumInput value={cfg.strategy.trend_sr.adx_period} step={1} min={2} max={100}
                         onChange={v => setTsr('adx_period', v)} />
-                    </div>
-                    <div>
+                    </label>
+                    <label className="block">
                       <Label tip="Require the breakout bar's volume to be ≥ this multiple of the recent average volume. Filters out low-conviction breakouts. 0 = off. 1.2–1.5 typical. Note: Alpaca crypto volume is single-venue (partial), so it's noisier for crypto than for stocks.">
                         Volume × (min)
                       </Label>
                       <NumInput value={cfg.strategy.trend_sr.volume_mult} step={0.1} min={0} max={10}
                         onChange={v => setTsr('volume_mult', v)} />
-                    </div>
-                    <div>
+                    </label>
+                    <label className="block">
                       <Label tip="How many bars to average for the volume filter's baseline. Default 20. Only matters when Volume × > 0.">
                         Volume avg (bars)
                       </Label>
                       <NumInput value={cfg.strategy.trend_sr.volume_ma} step={1} min={2} max={500}
                         onChange={v => setTsr('volume_ma', v)} />
-                    </div>
+                    </label>
                   </div>
                 </div>
               </div>
@@ -622,42 +634,42 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                   deviations away from the session VWAP, it fades the move back toward VWAP. Anchors reset daily.
                 </p>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-                  <div>
+                  <label className="block">
                     <Label tip="Enter when price is this many standard deviations away from the session VWAP. Larger = rarer but more stretched (higher-probability) entries. 2.0 is the classic band.">
                       Entry band (σ)
                     </Label>
                     <NumInput value={cfg.strategy.vwap_revert?.band_mult ?? 2.0} step={0.25} min={0.5} max={10}
                       onChange={v => setVwap('band_mult', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Stop sits this many σ from VWAP (beyond the entry). Must be larger than the entry band — the gap between them is your risk per trade.">
                       Stop (σ)
                     </Label>
                     <NumInput value={cfg.strategy.vwap_revert?.stop_mult ?? 3.5} step={0.25} min={1} max={20}
                       onChange={v => setVwap('stop_mult', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="How many bars the deviation's standard deviation is measured over. 60 = the last hour on 1-minute bars.">
                       σ window (bars)
                     </Label>
                     <NumInput value={cfg.strategy.vwap_revert?.dev_window ?? 60} step={5} min={10} max={500}
                       onChange={v => setVwap('dev_window', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Bars into the session before trading starts — VWAP and σ are meaningless in the first few minutes. 30 = no trades before 10:00 ET on stocks.">
                       Warmup (bars)
                     </Label>
                     <NumInput value={cfg.strategy.vwap_revert?.min_bars ?? 30} step={5} min={10} max={500}
                       onChange={v => setVwap('min_bars', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Maximum entries per symbol per session. Caps the damage on strongly trending days when reversion keeps losing.">
                       Max trades / day
                     </Label>
                     <NumInput value={cfg.strategy.vwap_revert?.max_trades_per_day ?? 3} step={1} min={1} max={50}
                       onChange={v => setVwap('max_trades_per_day', v)} />
-                  </div>
-                  <div>
+                  </label>
+                  <label className="block">
                     <Label tip="Time (Eastern) at which all positions are flattened. Crypto profiles trade 24/7 and ignore this.">
                       EOD exit (ET, HH:MM)
                     </Label>
@@ -667,7 +679,7 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                       onChange={e => setVwap('eod_exit_time', e.target.value)}
                       placeholder="15:50"
                     />
-                  </div>
+                  </label>
                 </div>
                 <div className="flex items-start gap-2 pt-0.5">
                   <input
@@ -698,22 +710,20 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
           disabled={saving}
           className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-blue-700 hover:bg-blue-600 disabled:opacity-40 transition-colors"
         >
-          <Save size={14} />
-          Save
+          <Save size={14} aria-hidden="true" />
+          {saving ? 'Saving…' : 'Save'}
         </button>
         <button
           onClick={() => void handleSave(true)}
           disabled={saving}
           className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium bg-slate-700 hover:bg-slate-600 disabled:opacity-40 transition-colors"
         >
-          <RotateCcw size={14} />
+          <RotateCcw size={14} aria-hidden="true" />
           Save &amp; Restart Bot
         </button>
-        {msg && (
-          <span className={`text-xs font-medium ${msg.ok ? 'text-green-400' : 'text-red-400'}`}>
-            {msg.text}
-          </span>
-        )}
+        <span aria-live="polite" className={`text-xs font-medium ${msg?.ok ? 'text-green-400' : 'text-red-400'}`}>
+          {msg?.text ?? ''}
+        </span>
       </div>
     </div>
   )

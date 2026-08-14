@@ -3,6 +3,14 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Tells the browser to render native UI — scrollbars, form controls, the
+       date picker, <select> popups — in dark. Without it Windows and iOS draw
+       white-on-white controls over a near-black page, which is the single
+       biggest source of "this doesn't feel like a real app". */
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-slate-950 text-slate-100 antialiased min-h-screen;
     /* Subtle depth: cool glow top-left, faint violet right, on near-black */
@@ -10,11 +18,39 @@
       radial-gradient(ellipse 80% 50% at 15% -10%, rgb(59 130 246 / 0.13), transparent 60%),
       radial-gradient(ellipse 60% 40% at 90% 0%, rgb(139 92 246 / 0.08), transparent 55%);
     background-attachment: fixed;
+    /* Kill the 300ms double-tap delay and the grey flash on tap. */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
+
+  /* Respect the notch / home indicator on full-bleed phones. */
+  body > #root {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
   /* Keep figures aligned in tables and stat readouts */
   table, .tabular-nums {
     font-variant-numeric: tabular-nums;
   }
+
+  /* Native <select> renders its popup with the system palette on Windows, so
+     the options list came out white-on-white. Paint both explicitly. */
+  select {
+    background-color: theme('colors.slate.800');
+    color: theme('colors.slate.100');
+  }
+  select option {
+    background-color: theme('colors.slate.800');
+    color: theme('colors.slate.100');
+  }
+
+  /* Anchored headings shouldn't hide under the sticky header. */
+  :target {
+    scroll-margin-top: 5rem;
+  }
+
   ::selection {
     @apply bg-blue-500/30;
   }
@@ -42,14 +78,78 @@
   .card:hover {
     @apply border-slate-600/80;
   }
+
+  /* One field shell so every input in the app focuses the same way. */
+  .field {
+    @apply w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm
+           text-slate-100 placeholder:text-slate-500
+           transition-colors duration-150;
+  }
+  .field:hover {
+    @apply border-slate-500;
+  }
+  .field:focus {
+    @apply border-blue-500 outline-none;
+  }
 }
 
 @layer utilities {
+  /* Cheap virtualization for long scroll lists (trade logs, the live feed).
+     Rows outside the viewport skip layout and paint, so a few thousand trades
+     stay smooth without pulling in a windowing library. */
+  .list-rows > * {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 2.25rem;
+  }
+
   .animate-fade-up {
     animation: fade-up 0.35s ease-out both;
   }
   @keyframes fade-up {
     from { opacity: 0; transform: translateY(6px); }
     to   { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* ── Focus ring ───────────────────────────────────────────────────────────────
+   Deliberately unlayered and box-shadow based. Components across the app set
+   `focus:outline-none`, which wins on specificity against any outline rule and
+   left keyboard users with no visible focus anywhere. A box-shadow ring doesn't
+   collide with `outline`, so this restores focus for every control at once.
+   :focus-visible, so it appears for keyboard and not on mouse clicks. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  box-shadow:
+    0 0 0 2px theme('colors.slate.950'),
+    0 0 0 4px theme('colors.blue.400');
+}
+
+/* Checkboxes sit on panels rather than the page background. */
+input[type='checkbox']:focus-visible {
+  box-shadow:
+    0 0 0 2px theme('colors.slate.900'),
+    0 0 0 4px theme('colors.blue.400');
+}
+
+/* ── Reduced motion ───────────────────────────────────────────────────────────
+   The dashboard pulses status dots continuously and fades panels on every tab
+   change. Both are decorative; neither should fire for someone who has asked
+   the OS to stop animating things. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-fade-up {
+    animation: none;
   }
 }

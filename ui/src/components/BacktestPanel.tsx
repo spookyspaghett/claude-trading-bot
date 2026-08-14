@@ -937,7 +937,7 @@ export default function BacktestPanel() {
               <h3 className="text-sm font-semibold text-slate-200">Trade Log</h3>
               <span className="text-xs text-slate-500">{result.trades.length} trades</span>
             </div>
-            <div className="overflow-auto max-h-80">
+            <div className="overflow-auto overscroll-contain max-h-80">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-slate-900 z-10">
                   <tr className="text-slate-500 uppercase tracking-wider border-b border-slate-800">
@@ -952,7 +952,7 @@ export default function BacktestPanel() {
                     <th className="px-4 py-2 text-right">P&amp;L</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800">
+                <tbody className="divide-y divide-slate-800 list-rows">
                   {result.trades.map((t, i) => {
                     const pnl = parseFloat(t.pnl)
                     return (

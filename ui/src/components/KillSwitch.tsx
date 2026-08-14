@@ -29,9 +29,9 @@ export default function KillSwitch({ onTriggered, slug }: Props) {
 
   if (triggered) {
     return (
-      <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-950 border border-red-700 text-red-400 text-sm font-semibold">
-        <Zap size={14} className="fill-current" />
-        KILL SWITCH ACTIVATED
+      <div role="status" className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-950 border border-red-700 text-red-400 text-sm font-semibold">
+        <Zap size={14} className="fill-current" aria-hidden="true" />
+        Kill Switch Activated
       </div>
     )
   }
@@ -62,8 +62,8 @@ export default function KillSwitch({ onTriggered, slug }: Props) {
       onClick={() => setConfirming(true)}
       className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold bg-red-700 hover:bg-red-600 border border-red-500 transition-colors shadow-lg shadow-red-950"
     >
-      <Zap size={14} />
-      KILL SWITCH
+      <Zap size={14} aria-hidden="true" />
+      Kill Switch
     </button>
   )
 }

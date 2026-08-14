@@ -110,10 +110,10 @@ export default function SignalFeed({ events, wsConnected }: Props) {
           {wsConnected ? 'live' : 'reconnecting…'}
         </span>
       </div>
-      <div className="overflow-y-auto flex-1 divide-y divide-slate-800/60" style={{ maxHeight: 340 }}>
+      <div className="overflow-y-auto overscroll-contain flex-1 divide-y divide-slate-800/60 list-rows" style={{ maxHeight: 340 }}>
         {events.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 text-slate-600 text-sm py-10">
-            <Hourglass size={20} className="text-slate-700" />
+            <Hourglass size={20} className="text-slate-700" aria-hidden="true" />
             Waiting for bot activity…
           </div>
         ) : (
