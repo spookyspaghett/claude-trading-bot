@@ -5,8 +5,7 @@
 # Re-run     : pulls latest git changes (if repo), reinstalls only what changed,
 #              rebuilds UI only if source files are newer, then restarts service
 #
-# Usage:
-#   chmod +x setup.sh
+# Usage (no chmod needed — the executable bit is tracked in git):
 #   sudo ./setup.sh            # normal run
 #   sudo ./setup.sh --force    # force full reinstall + UI rebuild
 #   sudo ./setup.sh --help     # show usage
@@ -171,9 +170,22 @@ if [ -d ".git" ]; then
             if [ "$LOCAL" != "$REMOTE" ] && [ "$REMOTE" != "none" ]; then
                 COMMITS=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo "?")
                 info "Pulling $COMMITS new commit(s)..."
-                git pull --ff-only
-                GIT_UPDATED=true
-                info "Repository updated to $(git rev-parse --short HEAD)"
+                # Don't let a failed pull kill the whole run. `set -e` used to
+                # abort here at step 2 of 10 with a raw git error, leaving
+                # nothing installed and nothing restarted — even though every
+                # remaining step would have worked fine against local files.
+                if git pull --ff-only; then
+                    GIT_UPDATED=true
+                    info "Repository updated to $(git rev-parse --short HEAD)"
+                else
+                    warn "Pull failed — continuing with the files already on disk"
+                    DIRTY=$(git diff --name-only 2>/dev/null | head -5)
+                    if [ -n "$DIRTY" ]; then
+                        echo -e "  ${DIM}locally modified:${NC}"
+                        echo "$DIRTY" | sed 's/^/    /'
+                        echo -e "  ${DIM}to take the incoming version:${NC} git checkout -- <file> && git pull"
+                    fi
+                fi
             else
                 skip "Repository already at latest commit"
             fi

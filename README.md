@@ -157,10 +157,14 @@ holds), and exit cleanly. Deleting the file (or pressing Start) re-arms it.
 `setup.sh` provisions and updates a deployment under `/home/<user>/claude-trading`:
 
 ```bash
-chmod +x setup.sh
 sudo ./setup.sh            # first run: install deps, build UI, create + start service
 sudo ./setup.sh --force    # force a full reinstall + UI rebuild
+sudo ./setup.sh --help     # options
 ```
+
+No `chmod` step: the executable bit is tracked in git. It used to be, and
+running it left `setup.sh` permanently modified in git's eyes — so the next
+update that touched the script refused to pull.
 
 It installs Python + Node deps, builds the UI, and creates a systemd service
 `claude-trading` that runs `uvicorn api.main:app` on port 8000. Re-running pulls
