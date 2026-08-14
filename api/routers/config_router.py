@@ -23,13 +23,31 @@ router = APIRouter()
 
 
 class RiskPublic(BaseModel):
-    """Risk config with Decimal fields serialised as plain floats for the UI."""
+    """Risk config with Decimal fields serialised as plain floats for the UI.
+
+    Defaults mirror ``RiskConfig`` so a profile written before these existed
+    still deserialises, and so an older UI build that omits them from a PUT
+    doesn't silently zero the sizing model.
+    """
     model_config = ConfigDict(json_encoders={Decimal: float})
 
     max_position_usd: float
     stop_loss_pct: float
     daily_loss_limit_usd: float
     max_open_positions: int
+
+    # Risk-based sizing
+    risk_per_trade_pct: float = 0.0
+    # Portfolio caps
+    max_portfolio_heat_pct: float = 0.0
+    max_group_heat_pct: float = 0.0
+    correlation_groups: dict[str, list[str]] = {}
+    max_gross_exposure_pct: float = 100.0
+    # Loss limits & drawdown throttle
+    daily_loss_limit_pct: float = 0.0
+    derisk_start_dd_pct: float = 0.0
+    halt_dd_pct: float = 0.0
+    min_risk_scale: float = 0.25
 
 
 class ConfigPublic(BaseModel):
@@ -58,6 +76,15 @@ async def get_config(profile: str | None = None) -> ConfigPublic:
                 stop_loss_pct=float(cfg.risk.stop_loss_pct),
                 daily_loss_limit_usd=float(cfg.risk.daily_loss_limit_usd),
                 max_open_positions=cfg.risk.max_open_positions,
+                risk_per_trade_pct=float(cfg.risk.risk_per_trade_pct),
+                max_portfolio_heat_pct=float(cfg.risk.max_portfolio_heat_pct),
+                max_group_heat_pct=float(cfg.risk.max_group_heat_pct),
+                correlation_groups=cfg.risk.correlation_groups,
+                max_gross_exposure_pct=float(cfg.risk.max_gross_exposure_pct),
+                daily_loss_limit_pct=float(cfg.risk.daily_loss_limit_pct),
+                derisk_start_dd_pct=float(cfg.risk.derisk_start_dd_pct),
+                halt_dd_pct=float(cfg.risk.halt_dd_pct),
+                min_risk_scale=float(cfg.risk.min_risk_scale),
             ),
             strategy=cfg.strategy,
         )
@@ -91,8 +118,29 @@ async def put_config(body: ConfigPublic, profile: str | None = None) -> dict[str
             "max_open_positions":   body.risk.max_open_positions,
             "trailing_stop_pct":    prev_risk.get("trailing_stop_pct", 10.0),
             "loser_cut_pct":        prev_risk.get("loser_cut_pct", 7.0),
+            # Sizing model. These decide every position size, so they are
+            # written explicitly rather than left to ride along in prev_risk.
+            "risk_per_trade_pct":     float(body.risk.risk_per_trade_pct),
+            "max_portfolio_heat_pct": float(body.risk.max_portfolio_heat_pct),
+            "max_group_heat_pct":     float(body.risk.max_group_heat_pct),
+            "correlation_groups":     body.risk.correlation_groups,
+            "max_gross_exposure_pct": float(body.risk.max_gross_exposure_pct),
+            "daily_loss_limit_pct":   float(body.risk.daily_loss_limit_pct),
+            "derisk_start_dd_pct":    float(body.risk.derisk_start_dd_pct),
+            "halt_dd_pct":            float(body.risk.halt_dd_pct),
+            "min_risk_scale":         float(body.risk.min_risk_scale),
         }
         existing["strategy"] = body.strategy.model_dump()
+
+        # Validate the merged profile before writing it. The drawdown ladder
+        # carries a cross-field constraint, so an otherwise well-typed request
+        # can still describe a config the bot will refuse to load — and finding
+        # that out at the next start, from a profile that saved cleanly, is the
+        # worst possible time.
+        try:
+            Config(**{k: v for k, v in existing.items() if k != "name"})
+        except Exception as exc:
+            raise ValueError(f"Rejected — {exc}") from exc
 
         save_profile(slug, existing)
 

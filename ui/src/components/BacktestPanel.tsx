@@ -740,13 +740,14 @@ export default function BacktestPanel() {
             />
             <StatCard
               label="Max Drawdown"
-              value={`-${fmtUsd(result.stats.max_drawdown)}`}
+              value={`-${result.stats.max_drawdown_pct.toFixed(1)}%`}
+              sub={`-${fmtUsd(result.stats.max_drawdown)} · ${result.stats.max_drawdown_days.toFixed(0)}d to recover`}
               positive={false}
             />
             <StatCard
               label="Avg Win / Loss"
               value={`${fmtUsd(result.stats.avg_win, true)}`}
-              sub={`Loss: -${fmtUsd(result.stats.avg_loss)}`}
+              sub={`-${fmtUsd(result.stats.avg_loss)} · ${result.stats.avg_win_r.toFixed(2)}R vs ${result.stats.avg_loss_r.toFixed(2)}R`}
               positive={parseFloat(result.stats.avg_win) >= parseFloat(result.stats.avg_loss)}
             />
             <StatCard
@@ -763,24 +764,12 @@ export default function BacktestPanel() {
               was worth the risk, and whether the result was skill or ordering. */}
           <div>
             <h3 className="text-sm font-semibold text-slate-200 mb-2">Risk Analysis</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <StatCard
                 label="Expectancy"
                 value={`${result.stats.expectancy_r >= 0 ? '+' : ''}${result.stats.expectancy_r.toFixed(2)}R`}
                 sub={`per trade, ${result.stats.r_trades} with stops`}
                 positive={result.stats.expectancy_r > 0}
-              />
-              <StatCard
-                label="Win / Loss size"
-                value={`${result.stats.avg_win_r.toFixed(2)}R`}
-                sub={`avg loss ${result.stats.avg_loss_r.toFixed(2)}R`}
-                positive={result.stats.avg_win_r >= result.stats.avg_loss_r}
-              />
-              <StatCard
-                label="Max Drawdown"
-                value={`-${result.stats.max_drawdown_pct.toFixed(1)}%`}
-                sub={`${result.stats.max_drawdown_days.toFixed(0)}d to recover`}
-                positive={false}
               />
               <StatCard
                 label="Sortino"

@@ -12,7 +12,12 @@ const DEFAULT: Config = {
   live: false,
   asset_class: 'stock',
   symbols: ['SPY', 'QQQ', 'AAPL', 'MSFT', 'NVDA', 'TSLA'],
-  risk: { max_position_usd: 50000, stop_loss_pct: 1.0, daily_loss_limit_usd: 500, max_open_positions: 4 },
+  risk: {
+    max_position_usd: 50000, stop_loss_pct: 1.0, daily_loss_limit_usd: 500, max_open_positions: 4,
+    risk_per_trade_pct: 0, max_portfolio_heat_pct: 0, max_group_heat_pct: 0,
+    correlation_groups: {}, max_gross_exposure_pct: 100,
+    daily_loss_limit_pct: 0, derisk_start_dd_pct: 0, halt_dd_pct: 0, min_risk_scale: 0.25,
+  },
   strategy: {
     name: 'orb',
     orb: { opening_range_minutes: 15, entry_order_type: 'limit', eod_exit_time: '15:50', buffer_pct: 0, stop_mode: 'pct', max_range_pct: 0 },
@@ -87,6 +92,62 @@ function Section({ title, tip, children }: { title: string; tip?: string; childr
   )
 }
 
+// ── Correlation groups ↔ text ─────────────────────────────────────────────────
+
+/** "label: SYM1, SYM2" per line → { label: [SYM1, SYM2] }. */
+function parseGroups(text: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
+  for (const line of text.split('\n')) {
+    const idx = line.indexOf(':')
+    if (idx < 1) continue
+    const label = line.slice(0, idx).trim()
+    const syms = line.slice(idx + 1).split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    if (label && syms.length) out[label] = syms
+  }
+  return out
+}
+
+function groupsToText(groups: Record<string, string[]>): string {
+  return Object.entries(groups).map(([k, v]) => `${k}: ${v.join(', ')}`).join('\n')
+}
+
+// ── One stop-out against the daily budget ─────────────────────────────────────
+
+/** Surfaces the interaction between position size, stop distance and the daily
+ *  loss limit. Each is sensible alone; together they can mean a single losing
+ *  trade consumes the whole day, which nothing in the UI otherwise reveals. */
+function StopOutHint({ risk }: { risk: Config['risk'] }) {
+  // Both modes reduce to the same question — how many losing trades fit inside
+  // the daily budget — but they are measured in different units.
+  let share: number | null = null
+  let detail = ''
+
+  if (risk.risk_per_trade_pct > 0) {
+    // Risk-based sizing: loss per trade IS the risk %, so compare like for
+    // like against the percentage limit. The USD limit needs live equity to
+    // compare against, which this editor doesn't have.
+    if (risk.daily_loss_limit_pct > 0) {
+      share = risk.risk_per_trade_pct / risk.daily_loss_limit_pct
+      detail = `Each trade risks ${risk.risk_per_trade_pct}% of equity against a ${risk.daily_loss_limit_pct}% daily limit`
+    }
+  } else if (risk.daily_loss_limit_usd > 0) {
+    const perTrade = risk.max_position_usd * (risk.stop_loss_pct / 100)
+    share = perTrade / risk.daily_loss_limit_usd
+    detail = `One stop-out ≈ $${Math.round(perTrade).toLocaleString('en-US')} against a $${risk.daily_loss_limit_usd.toLocaleString('en-US')} daily limit`
+  }
+  if (share === null || !Number.isFinite(share) || share <= 0) return null
+
+  const trades = Math.floor(1 / share)
+  const tight = trades <= 1
+  return (
+    <p className={`text-[10px] mt-1 ${tight ? 'text-amber-400' : 'text-slate-600'}`}>
+      {detail} — {trades < 1
+        ? 'a single losing trade breaches it.'
+        : `the day halts after ${trades} losing ${trades === 1 ? 'trade' : 'trades'}.`}
+    </p>
+  )
+}
+
 // ── Number input ──────────────────────────────────────────────────────────────
 
 function NumInput({
@@ -95,12 +156,33 @@ function NumInput({
   value: number; onChange: (v: number) => void
   step?: number; min?: number; max?: number; disabled?: boolean
 }) {
+  // Holds the raw text while focused. The previous version parsed straight to a
+  // number with `|| 0`, so clearing a field to retype it wrote a literal 0 —
+  // and 0 is now a meaningful value (it switches risk-based sizing off), so a
+  // half-finished edit could silently disable the sizing model.
+  const [text, setText] = useState(String(value))
+  const [editing, setEditing] = useState(false)
+  useEffect(() => {
+    if (!editing) setText(String(value))
+  }, [value, editing])
+
   return (
     <input
       type="number" step={step} min={min} max={max} disabled={disabled}
       className="field mt-1 tabular-nums disabled:opacity-40"
-      value={value}
-      onChange={e => onChange(parseFloat(e.target.value) || 0)}
+      value={text}
+      onFocus={() => setEditing(true)}
+      onBlur={() => {
+        setEditing(false)
+        // Leaving the field empty or mid-edit restores the last good value
+        // rather than committing a zero nobody asked for.
+        setText(String(value))
+      }}
+      onChange={e => {
+        setText(e.target.value)
+        const n = parseFloat(e.target.value)
+        if (!Number.isNaN(n)) onChange(n)
+      }}
     />
   )
 }
@@ -110,6 +192,9 @@ function NumInput({
 export default function ConfigEditor({ onRestart, slug }: Props) {
   const [cfg, setCfg] = useState<Config>(DEFAULT)
   const [symbolsText, setSymbolsText] = useState('')
+  // Edited as text so a half-typed group doesn't clobber the parsed value;
+  // committed back to cfg on blur.
+  const [groupsText, setGroupsText] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
 
@@ -119,8 +204,10 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
     fetch(`/api/config${q}`)
       .then(r => r.json())
       .then((data: Config) => {
-        setCfg({ ...DEFAULT, ...data, strategy: { ...DEFAULT.strategy, ...data.strategy } })
+        const risk = { ...DEFAULT.risk, ...data.risk }
+        setCfg({ ...DEFAULT, ...data, risk, strategy: { ...DEFAULT.strategy, ...data.strategy } })
         setSymbolsText(data.symbols.join(', '))
+        setGroupsText(groupsToText(risk.correlation_groups ?? {}))
       })
       .catch(() => setSymbolsText(DEFAULT.symbols.join(', ')))
   }, [q])
@@ -158,7 +245,10 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
   async function handleSave(andRestart: boolean) {
     setSaving(true); setMsg(null)
     const symbols = symbolsText.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
-    const payload: Config = { ...cfg, symbols }
+    const payload: Config = {
+      ...cfg, symbols,
+      risk: { ...cfg.risk, correlation_groups: parseGroups(groupsText) },
+    }
     try {
       await apiPut(`/api/config${q}`, payload)
       if (andRestart) { await apiPost(`/api/bot/restart${q}`); onRestart() }
@@ -187,8 +277,10 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
       </div>
 
       <div className="p-4 space-y-6">
+        {/* Three balanced columns: the two short sections ride with the
+            long ones so nothing wraps into a half-empty row. */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-
+          <div className="space-y-6">
           {/* ── Symbols & live mode ───────────────────────────────────────── */}
           <Section
             title="Symbols"
@@ -219,7 +311,48 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
               <Tip text="When ON, orders are placed on a real brokerage account with real money. Leave OFF to use Alpaca paper trading." />
             </div>
           </Section>
-
+          {/* ── Drawdown throttle ─────────────────────────────────────────── */}
+          <Section
+            title="Drawdown Throttle"
+            tip="Betting a constant fraction of a shrinking account is what turns a bad run into an unrecoverable one. Between the two thresholds, per-trade risk tapers linearly. Existing positions are never force-liquidated — only new entries stop."
+          >
+            <label className="block">
+              <Label tip="Peak-to-current drawdown at which the bot starts cutting position size. 0 = off.">
+                Start de-risking at % drawdown
+              </Label>
+              <NumInput value={cfg.risk.derisk_start_dd_pct} step={1} min={0} max={100}
+                onChange={v => setRisk('derisk_start_dd_pct', v)} />
+            </label>
+            <label className="block">
+              <Label tip="Drawdown at which no new positions open at all. Must be greater than the de-risk threshold. Open positions keep running on their stops — dumping the book at the bottom realises exactly the loss this exists to avoid. 0 = off.">
+                Halt new entries at % drawdown
+              </Label>
+              <NumInput value={cfg.risk.halt_dd_pct} step={1} min={0} max={100}
+                onChange={v => setRisk('halt_dd_pct', v)} />
+              {cfg.risk.derisk_start_dd_pct > 0 && cfg.risk.halt_dd_pct > 0
+                && cfg.risk.halt_dd_pct <= cfg.risk.derisk_start_dd_pct && (
+                <p className="text-[10px] text-red-400 mt-1">
+                  Must be greater than the de-risk threshold ({cfg.risk.derisk_start_dd_pct}%) — this will be rejected on save.
+                </p>
+              )}
+            </label>
+            <label className="block">
+              <Label tip="Floor for the taper: risk never shrinks below this fraction of normal size. 0.35 means a deep drawdown still trades at 35% of full size.">
+                Minimum risk scale
+              </Label>
+              <NumInput value={cfg.risk.min_risk_scale} step={0.05} min={0} max={1}
+                onChange={v => setRisk('min_risk_scale', v)} />
+            </label>
+            <label className="block">
+              <Label tip="Daily loss limit as a % of equity. Applied together with the USD limit by taking whichever is TIGHTER, so setting it can only reduce risk. 0 = off.">
+                Daily loss limit %
+              </Label>
+              <NumInput value={cfg.risk.daily_loss_limit_pct} step={0.5} min={0} max={100}
+                onChange={v => setRisk('daily_loss_limit_pct', v)} />
+            </label>
+          </Section>
+          </div>
+          <div className="space-y-6">
           {/* ── Risk parameters ───────────────────────────────────────────── */}
           <Section
             title="Risk Parameters"
@@ -249,8 +382,65 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
               </Label>
               <NumInput value={cfg.risk.max_open_positions} step={1} min={1} max={20} onChange={v => setRisk('max_open_positions', v)} />
             </label>
+            <StopOutHint risk={cfg.risk} />
           </Section>
 
+          {/* ── Position sizing ───────────────────────────────────────────── */}
+          <Section
+            title="Position Sizing"
+            tip="Solves position size from the stop instead of the price, so every trade risks the same amount whether its stop is 1% or 6% away. Set risk per trade to 0 to go back to flat max-position sizing."
+          >
+            <label className="block">
+              <Label tip="Percent of account equity risked between entry and stop. qty = (equity × this%) ÷ |entry − stop|. 0.5–1% is typical. 0 disables it and every position is sized to max position size instead.">
+                Risk per trade %
+              </Label>
+              <NumInput value={cfg.risk.risk_per_trade_pct} step={0.05} min={0} max={100}
+                onChange={v => setRisk('risk_per_trade_pct', v)} />
+              <p className="text-[10px] text-slate-600 mt-1">
+                {cfg.risk.risk_per_trade_pct > 0
+                  ? 'Max position size above acts as a ceiling, not the normal size.'
+                  : 'Off — every position is sized to max position size.'}
+              </p>
+            </label>
+            <label className="block">
+              <Label tip="Ceiling on TOTAL open risk across all positions (sum of entry−stop × qty) as a % of equity. This is what bounds a bad week; max open positions only counts positions, and a position is not a unit of risk. 0 = off.">
+                Max portfolio heat %
+              </Label>
+              <NumInput value={cfg.risk.max_portfolio_heat_pct} step={0.5} min={0} max={100}
+                onChange={v => setRisk('max_portfolio_heat_pct', v)} />
+            </label>
+            <label className="block">
+              <Label tip="The same open-risk ceiling applied within one correlation group. Four megacap US equities are close to a single bet; sizing them as four independent ones is how a book that looks diversified takes one concentrated loss. 0 = off.">
+                Max group heat %
+              </Label>
+              <NumInput value={cfg.risk.max_group_heat_pct} step={0.5} min={0} max={100}
+                onChange={v => setRisk('max_group_heat_pct', v)} />
+            </label>
+            <label className="block">
+              <Label tip="Symbols that move together, one group per line, as “label: SYM1, SYM2”. Anything not listed is treated as its own group and is bounded only by portfolio heat.">
+                Correlation groups
+              </Label>
+              <textarea
+                value={groupsText}
+                onChange={e => setGroupsText(e.target.value)}
+                onBlur={() => setCfg(prev => ({
+                  ...prev, risk: { ...prev.risk, correlation_groups: parseGroups(groupsText) },
+                }))}
+                rows={2} spellCheck={false} translate="no"
+                placeholder="us_equity_beta: SPY, AAPL, MSFT, NVDA"
+                className="field mt-1 font-mono text-xs"
+              />
+            </label>
+            <label className="block">
+              <Label tip="Gross notional ceiling as a % of equity. 100 means never borrow; raise it only on a margin account.">
+                Max gross exposure %
+              </Label>
+              <NumInput value={cfg.risk.max_gross_exposure_pct} step={10} min={0}
+                onChange={v => setRisk('max_gross_exposure_pct', v)} />
+            </label>
+          </Section>
+          </div>
+          <div className="space-y-6">
           {/* ── Strategy selector ─────────────────────────────────────────── */}
           <Section title="Strategy">
             {/* Tabs — ORB is stock-only (built around the market open) */}
@@ -700,6 +890,7 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
               </div>
             )}
           </Section>
+          </div>
         </div>
       </div>
 

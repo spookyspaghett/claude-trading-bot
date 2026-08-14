@@ -84,6 +84,19 @@ export interface ConfigRisk {
   stop_loss_pct: number
   daily_loss_limit_usd: number
   max_open_positions: number
+  /** % of equity risked entry→stop. 0 = flat max_position_usd sizing. */
+  risk_per_trade_pct: number
+  /** Caps on total open risk (Σ |entry−stop| × qty) as % of equity. 0 = off. */
+  max_portfolio_heat_pct: number
+  max_group_heat_pct: number
+  /** Group label → symbols that move together. */
+  correlation_groups: Record<string, string[]>
+  max_gross_exposure_pct: number
+  daily_loss_limit_pct: number
+  /** Drawdown throttle: taper from derisk_start, stop opening at halt. */
+  derisk_start_dd_pct: number
+  halt_dd_pct: number
+  min_risk_scale: number
 }
 
 export interface ConfigOrb {
