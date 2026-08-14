@@ -94,7 +94,17 @@ def _build_payload(body: ProfileBody, existing: dict[str, Any] | None) -> dict[s
         "asset_class": body.asset_class,
         "live": body.live,
         "symbols": body.symbols,
-        "risk": body.risk.model_dump(),
+        # Merge over whatever the profile already had rather than replacing it.
+        # A wholesale replace silently dropped every risk key the basic editor
+        # doesn't render — which now includes the sizing, heat and drawdown
+        # settings, so a single profile save would have quietly reverted the
+        # account to flat notional sizing. exclude_unset keeps fields the client
+        # didn't send (tuned trailing_stop_pct / loser_cut_pct) from being
+        # clobbered by this model's defaults.
+        "risk": {
+            **((existing or {}).get("risk") or {}),
+            **body.risk.model_dump(exclude_unset=True),
+        },
         "strategy": body.strategy.model_dump(),
         "ai": body.ai.model_dump(),
         "alpaca_api_key": api_key,

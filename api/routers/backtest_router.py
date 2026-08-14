@@ -49,6 +49,23 @@ def _result_to_dict(result: Any) -> dict[str, Any]:
             "max_drawdown":   str(result.stats.max_drawdown.quantize(result.stats.max_drawdown.__class__("0.01"))),
             "sharpe_ratio":   round(result.stats.sharpe_ratio, 2),
             "avg_hold_days":  round(result.stats.avg_hold_days, 1),
+            # Risk analytics: percentage drawdown geometry, downside-only
+            # ratios, edge measured in R, and the bootstrap distribution.
+            "total_return_pct":       round(result.stats.total_return_pct, 1),
+            "cagr_pct":               round(result.stats.cagr_pct, 1),
+            "max_drawdown_pct":       round(result.stats.max_drawdown_pct, 1),
+            "max_drawdown_days":      round(result.stats.max_drawdown_days, 0),
+            "sortino_ratio":          round(result.stats.sortino_ratio, 2),
+            "calmar_ratio":           round(result.stats.calmar_ratio, 2),
+            "expectancy_r":           round(result.stats.expectancy_r, 2),
+            "avg_win_r":              round(result.stats.avg_win_r, 2),
+            "avg_loss_r":             round(result.stats.avg_loss_r, 2),
+            "r_trades":               result.stats.r_trades,
+            "max_consecutive_losses": result.stats.max_consecutive_losses,
+            "exposure_pct":           round(result.stats.exposure_pct, 0),
+            "mc_median_max_dd_pct":   round(result.stats.mc_median_max_dd_pct, 1),
+            "mc_p95_max_dd_pct":      round(result.stats.mc_p95_max_dd_pct, 1),
+            "mc_prob_negative":       round(result.stats.mc_prob_negative * 100, 0),
         },
         "trades": [
             {

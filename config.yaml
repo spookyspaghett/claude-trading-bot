@@ -10,12 +10,56 @@ symbols:
   - NVDA
 
 risk:
-  max_position_usd: 50000     # Maximum notional value per position (USD)
+  max_position_usd: 50000     # Ceiling on notional per position (USD). With
+                              # risk_per_trade_pct set this is only a cap, not
+                              # the normal size.
   stop_loss_pct: 1.0          # Stop loss % used by strategies to compute signal stop prices
+  # NOTE: this is an ABSOLUTE limit and is currently the binding one — a single
+  # $50k position stopped out at 1% loses exactly $500. Donchian's ATR stop sits
+  # 3-6% away, so one trade could breach this several times over before the
+  # limit can react. Left unchanged deliberately (loosening a loss limit is your
+  # call, not the bot's), but raise it or lower max_position_usd so the two agree.
   daily_loss_limit_usd: 500   # Flatten all & halt trading if daily P&L drops below this
   max_open_positions: 4       # Maximum number of concurrent open positions
   trailing_stop_pct: 10.0     # Trailing stop % that follows the price to lock in gains
   loser_cut_pct: 7.0          # Auto-exit any position whose unrealized loss exceeds this %
+
+  # ── Risk-based position sizing ──────────────────────────────────────────────
+  # Size is solved from the stop instead of the price:
+  #     qty = (equity × risk_per_trade_pct%) / |entry − stop|
+  # so every trade risks the same amount whether its stop is 1% or 6% away, and
+  # positions grow as the account grows. Capped by max_position_usd and by the
+  # heat limits below. Set to 0 to return to flat max_position_usd sizing.
+  risk_per_trade_pct: 0.75
+
+  # ── Portfolio risk caps ─────────────────────────────────────────────────────
+  # Total open risk (Σ entry−stop × qty) may not exceed this % of equity. This
+  # is the number that bounds a bad week — max_open_positions only counts
+  # positions, and a position is not a unit of risk. 0 = off.
+  max_portfolio_heat_pct: 4.0
+  # The same cap applied within one correlation group. Four megacap US equities
+  # are close to one bet; sizing them as four independent ones is how a book
+  # that looks diversified takes a single concentrated loss. 0 = off.
+  max_group_heat_pct: 3.0
+  # Symbols that move together. Anything not listed is treated as its own group
+  # and is bounded only by max_portfolio_heat_pct.
+  correlation_groups:
+    us_equity_beta: [SPY, AAPL, MSFT, NVDA]
+  # Gross notional ceiling as % of equity. 100 = never use margin.
+  max_gross_exposure_pct: 100
+
+  # ── Drawdown throttle ───────────────────────────────────────────────────────
+  # Betting a constant fraction of a shrinking account is what turns a bad run
+  # into an unrecoverable one. Between derisk_start and halt, per-trade risk
+  # scales down linearly to min_risk_scale; at halt, no new positions open.
+  # Existing positions are NOT liquidated — dumping the book at the bottom of a
+  # drawdown realises exactly the loss the throttle exists to avoid.
+  derisk_start_dd_pct: 8.0    # Begin cutting size at 8% below the equity peak
+  halt_dd_pct: 20.0           # Stop opening new positions at 20% below the peak
+  min_risk_scale: 0.35        # Never shrink below 35% of normal size
+  # Daily loss limit as % of equity. Applied together with daily_loss_limit_usd
+  # by taking whichever is TIGHTER, so this can only ever reduce risk. 0 = off.
+  daily_loss_limit_pct: 2.0
 
 ai:
   enable_research: false      # Set true + add PERPLEXITY_API_KEY to .env for pre-market research

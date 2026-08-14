@@ -80,11 +80,15 @@ async def put_config(body: ConfigPublic, profile: str | None = None) -> dict[str
         existing["asset_class"] = body.asset_class
         existing["symbols"] = body.symbols
         existing["risk"] = {
+            # Carry every key the editor doesn't render — sizing, portfolio
+            # heat, correlation groups, the drawdown throttle. Listing the
+            # survivors by hand meant each new risk knob was one forgotten line
+            # away from being wiped by an unrelated save.
+            **prev_risk,
             "max_position_usd":     float(body.risk.max_position_usd),
             "stop_loss_pct":        float(body.risk.stop_loss_pct),
             "daily_loss_limit_usd": float(body.risk.daily_loss_limit_usd),
             "max_open_positions":   body.risk.max_open_positions,
-            # Preserve advanced risk knobs not exposed in the basic editor.
             "trailing_stop_pct":    prev_risk.get("trailing_stop_pct", 10.0),
             "loser_cut_pct":        prev_risk.get("loser_cut_pct", 7.0),
         }

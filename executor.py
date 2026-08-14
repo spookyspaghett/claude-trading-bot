@@ -139,12 +139,27 @@ class OrderExecutor:
             log_rejection(order_id="N/A", symbol=signal.symbol, reason=reason)
             return
 
-        qty = self._risk.compute_qty(signal.entry_price, fractional=self._fractional)
+        # Pass the stop so sizing can solve qty from risk-to-stop rather than
+        # from price alone; the symbol lets the correlation-group heat cap see
+        # which cluster this trade adds to.
+        qty = self._risk.compute_qty(
+            signal.entry_price,
+            fractional=self._fractional,
+            symbol=signal.symbol,
+            stop_price=signal.stop_price,
+        )
         if qty <= Decimal("0"):
             log_rejection(
                 order_id="N/A",
                 symbol=signal.symbol,
-                reason="position size computed as 0",
+                reason=(
+                    "position size computed as 0 — "
+                    + self._risk.describe_size_limit(
+                        signal.entry_price,
+                        symbol=signal.symbol,
+                        stop_price=signal.stop_price,
+                    )
+                ),
             )
             return
 
@@ -384,8 +399,13 @@ class OrderExecutor:
                     )
                     self._cost_basis[symbol] = (fill_price, pending.direction)
                     qty_signed = delta if order.side == OrderSide.BUY else -delta
+                    # Register what this position commits in cash and in
+                    # risk-to-stop so the heat and gross-exposure caps can see
+                    # it. Recomputed from the running net qty on every partial,
+                    # so it stays correct as the entry fills in pieces.
                     self._risk.record_fill(
                         symbol=symbol, qty=qty_signed, realised_pnl=Decimal("0"),
+                        entry_price=fill_price, stop_price=pending.stop_price,
                     )
                     # A partial fill is a real position, not a pending entry.
                     # Leaving it pending burned an open-position slot forever.

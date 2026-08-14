@@ -111,6 +111,9 @@ class DonchianRunner:
         self._eod_attempts: int = 0
         self._eod_attempt_date: str = ""
         self._last_heartbeat: datetime | None = None
+        # Whether an equity-refresh failure has already been reported (see
+        # _refresh_equity) so a sustained outage logs once, not every cycle.
+        self._equity_warned: bool = False
         self._load_handoff()
 
     # ── handoff persistence (restart-safe queue + debounce) ────────────────────
@@ -428,6 +431,11 @@ class DonchianRunner:
             except Exception as exc:
                 log_error("donchian_exit_failed", symbol=symbol, error=str(exc))
 
+        # Refresh equity AFTER the exits above have freed buying power, so the
+        # day's entries are sized against the account as it will actually be.
+        if self._queued_entries:
+            await self._refresh_equity()
+
         # Entry orders
         entered: list[str] = []
         for symbol, action in list(self._queued_entries.items()):
@@ -444,9 +452,23 @@ class DonchianRunner:
                 if not bars:
                     continue
                 price = Decimal(str(bars[-1].close))
-                qty   = self._risk.compute_qty(price, fractional=self._is_crypto)
+                # Size off the stop the scan already set for this symbol. Both
+                # are anchored to the same daily close, so the distance between
+                # them is the risk the trade was designed to take.
+                tracked = self._strategy.open_positions.get(symbol)
+                stop = (
+                    Decimal(str(tracked.stop_price))
+                    if tracked is not None and tracked.stop_price > 0
+                    else None
+                )
+                qty = self._risk.compute_qty(
+                    price, fractional=self._is_crypto,
+                    symbol=symbol, stop_price=stop,
+                )
                 if qty <= Decimal("0"):
-                    log_info("donchian_entry_zero_qty", symbol=symbol)
+                    log_info("donchian_entry_zero_qty", symbol=symbol,
+                             limit=self._risk.describe_size_limit(
+                                 price, symbol=symbol, stop_price=stop))
                     self._strategy.remove_position(symbol)
                     self._queued_entries.pop(symbol, None)
                     self._save_handoff()
@@ -456,7 +478,10 @@ class DonchianRunner:
                 await self._broker.submit_market_order(symbol, qty, side)
                 self._strategy.record_fill(symbol, float(qty))
                 signed_qty = qty if side == OrderSide.BUY else -qty
-                self._risk.record_fill(symbol, signed_qty, Decimal("0"))
+                self._risk.record_fill(
+                    symbol, signed_qty, Decimal("0"),
+                    entry_price=price, stop_price=stop,
+                )
                 entered.append(symbol)
                 # Dequeue this entry as soon as it's placed so a mid-loop restart
                 # can't re-fire it; flag it for stop re-anchoring once the fill
@@ -511,6 +536,28 @@ class DonchianRunner:
         self._save_handoff()
 
     # ── startup reconciliation (state vs broker) ───────────────────────────────
+
+    async def _refresh_equity(self) -> None:
+        """Feed account equity to the risk manager before it sizes anything.
+
+        Everything percentage-based — per-trade risk, portfolio heat, the
+        drawdown throttle — is inert until this lands. The Donchian path never
+        called it, so it sized every position at the flat configured maximum
+        regardless of what the account actually held.
+        """
+        try:
+            acct = await self._broker.get_account()
+            equity = Decimal(str(getattr(acct, "equity", None) or "0"))
+        except Exception as exc:
+            # Sizing silently falls back to flat notional when this fails, so
+            # say so once per outage rather than never or every 60 seconds.
+            if not self._equity_warned:
+                self._equity_warned = True
+                log_error("donchian_equity_refresh_failed", error=str(exc))
+            return
+        if equity > Decimal("0"):
+            self._risk.set_account_equity(equity)
+            self._equity_warned = False
 
     async def _reconcile_with_broker(self) -> None:
         """Reconcile persisted state against the broker on startup (#2) so no
@@ -595,6 +642,11 @@ class DonchianRunner:
     # ── intraday stop check ───────────────────────────────────────────────────
 
     async def _check_open_positions(self) -> None:
+        # Track the equity peak continuously, not just when a position is open —
+        # the drawdown throttle reads a high-water mark, and a mark that only
+        # updates while in a trade would understate every subsequent drawdown.
+        await self._refresh_equity()
+
         tracked = self._strategy.open_positions
         if not tracked and not self._pending_reanchor:
             return

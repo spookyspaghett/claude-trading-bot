@@ -15,7 +15,7 @@ from data import DataFeed
 from executor import OrderExecutor
 from logger import log_error, log_info, setup_logging
 from research import PremarketResearch
-from risk import RiskManager
+from risk import RiskManager, RiskPolicy
 from strategy import EMAStrategy, ORBStrategy, Strategy, TrendSRStrategy, VWAPRevertStrategy
 
 ET = ZoneInfo("America/New_York")
@@ -173,6 +173,7 @@ async def _run_donchian(config: object, kill_path: Path = Path("KILL"),
         daily_loss_limit_usd=config.risk.daily_loss_limit_usd,
         max_open_positions=config.risk.max_open_positions,
         kill_switch_path=kill_path,
+        policy=RiskPolicy.from_config(config.risk),
     )
     strategy = DonchianLiveStrategy(
         lookback_days=dc.lookback_days,
@@ -287,6 +288,7 @@ async def run(slug: str | None = None) -> None:
         daily_loss_limit_usd=config.risk.daily_loss_limit_usd,
         max_open_positions=config.risk.max_open_positions,
         kill_switch_path=kill_path,
+        policy=RiskPolicy.from_config(config.risk),
     )
     strategy, entry_order_type = _build_strategy(config)
     executor = OrderExecutor(

@@ -19,6 +19,22 @@ interface BacktestStats {
   max_drawdown: string
   sharpe_ratio: number
   avg_hold_days: number
+  // Risk analytics
+  total_return_pct: number
+  cagr_pct: number
+  max_drawdown_pct: number
+  max_drawdown_days: number
+  sortino_ratio: number
+  calmar_ratio: number
+  expectancy_r: number       // avg P&L per trade in units of risk taken
+  avg_win_r: number
+  avg_loss_r: number
+  r_trades: number           // trades carrying a usable stop (the R sample)
+  max_consecutive_losses: number
+  exposure_pct: number
+  mc_median_max_dd_pct: number   // bootstrapped drawdown distribution
+  mc_p95_max_dd_pct: number
+  mc_prob_negative: number       // already ×100 from the API
 }
 
 interface BacktestTrade {
@@ -740,6 +756,82 @@ export default function BacktestPanel() {
                 : `${result.stats.avg_hold_days.toFixed(1)}d`}
               sub="avg days per trade"
             />
+          </div>
+
+          {/* ── Risk analysis ─────────────────────────────────────────────────
+              Dollar P&L says whether this run made money. These say whether it
+              was worth the risk, and whether the result was skill or ordering. */}
+          <div>
+            <h3 className="text-sm font-semibold text-slate-200 mb-2">Risk Analysis</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <StatCard
+                label="Expectancy"
+                value={`${result.stats.expectancy_r >= 0 ? '+' : ''}${result.stats.expectancy_r.toFixed(2)}R`}
+                sub={`per trade, ${result.stats.r_trades} with stops`}
+                positive={result.stats.expectancy_r > 0}
+              />
+              <StatCard
+                label="Win / Loss size"
+                value={`${result.stats.avg_win_r.toFixed(2)}R`}
+                sub={`avg loss ${result.stats.avg_loss_r.toFixed(2)}R`}
+                positive={result.stats.avg_win_r >= result.stats.avg_loss_r}
+              />
+              <StatCard
+                label="Max Drawdown"
+                value={`-${result.stats.max_drawdown_pct.toFixed(1)}%`}
+                sub={`${result.stats.max_drawdown_days.toFixed(0)}d to recover`}
+                positive={false}
+              />
+              <StatCard
+                label="Sortino"
+                value={result.stats.sortino_ratio.toFixed(2)}
+                sub="downside risk only"
+                positive={result.stats.sortino_ratio >= 1}
+              />
+              <StatCard
+                label="Calmar"
+                value={result.stats.calmar_ratio.toFixed(2)}
+                sub={`CAGR ${result.stats.cagr_pct.toFixed(1)}% ÷ maxDD`}
+                positive={result.stats.calmar_ratio >= 1}
+              />
+              <StatCard
+                label="Worst losing run"
+                value={`${result.stats.max_consecutive_losses}`}
+                sub={`${result.stats.exposure_pct.toFixed(0)}% time in market`}
+              />
+            </div>
+            {/* Bootstrap: the realised curve is one ordering of these trades.
+                Resampling shows how deep a drawdown a merely unlucky run
+                produces — size against p95, not against what happened once. */}
+            <div className="mt-3 bg-slate-800/60 rounded-xl p-4 border border-slate-700/80">
+              <p className="text-xs text-slate-500 uppercase tracking-wide mb-2">
+                Monte Carlo · 1,000 reshuffles of this trade sequence
+              </p>
+              <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+                <span className="text-slate-300">
+                  Typical max drawdown{' '}
+                  <b className="tabular-nums text-slate-100">
+                    -{result.stats.mc_median_max_dd_pct.toFixed(1)}%
+                  </b>
+                </span>
+                <span className="text-slate-300">
+                  Bad-luck case (95th pct){' '}
+                  <b className="tabular-nums text-amber-400">
+                    -{result.stats.mc_p95_max_dd_pct.toFixed(1)}%
+                  </b>
+                </span>
+                <span className="text-slate-300">
+                  Chance of losing money{' '}
+                  <b className="tabular-nums text-slate-100">
+                    {result.stats.mc_prob_negative.toFixed(0)}%
+                  </b>
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 mt-2">
+                Assumes trades are independent. Trend systems cluster their wins,
+                so treat these as a floor on the risk, not a ceiling.
+              </p>
+            </div>
           </div>
 
           {/* ── Equity curve + drawdown overlay ───────────────────────────── */}

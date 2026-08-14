@@ -33,7 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("files", nargs="+", help="daily-bar CSV/XLSX files")
     p.add_argument("--equity", type=float, default=200.0)
-    p.add_argument("--position-size", type=float, default=150.0)
+    p.add_argument("--position-size", type=float, default=150.0,
+                   help="notional CEILING per position; with --risk-pct set "
+                        "this is a cap, not the normal size")
+    p.add_argument("--risk-pct", type=float, default=-1.0,
+                   help="percent of equity risked per trade (size solved "
+                        "from the stop). -1 = use config.yaml, 0 = flat")
     p.add_argument("--lookback", type=int, default=40)
     p.add_argument("--exit-lookback", type=int, default=20)
     p.add_argument("--trend-ma", type=int, default=200)
@@ -50,13 +55,21 @@ def build_parser() -> argparse.ArgumentParser:
 async def main() -> int:
     args = build_parser().parse_args()
 
-    from backtest import parse_bars_from_bytes, run_backtest_from_file
+    from backtest import (
+        _r_multiples,
+        parse_bars_from_bytes,
+        run_backtest_from_file,
+    )
     from config_loader import load_config
 
     cfg = load_config(PROJECT_ROOT / "config.yaml")
-    risk = cfg.risk.model_copy(update={
+    # model_copy bypasses validators, so coerce to Decimal at the call site.
+    overrides: dict[str, Decimal] = {
         "max_position_usd": Decimal(str(args.position_size)),
-    })
+    }
+    if args.risk_pct >= 0:
+        overrides["risk_per_trade_pct"] = Decimal(str(args.risk_pct))
+    risk = cfg.risk.model_copy(update=overrides)
 
     rows: list[tuple[str, object]] = []
     exits: dict[str, int] = {}
@@ -99,14 +112,18 @@ async def main() -> int:
         print("No symbol produced a result.", file=sys.stderr)
         return 1
 
-    print(f"\nEquity {args.equity:g} | position {args.position_size:g} | "
+    sizing = (
+        f"risk {float(risk.risk_per_trade_pct):g}%/trade (cap {args.position_size:g})"
+        if risk.risk_per_trade_pct > 0 else f"flat {args.position_size:g}"
+    )
+    print(f"\nEquity {args.equity:g} | {sizing} | "
           f"{args.lookback}-in/{args.exit_lookback}-out | MA{args.trend_ma} | "
           f"ATR{args.atr_period}x{args.atr_multiplier:g} | "
           f"trail {args.trailing_activation_pct:g}%/{args.trailing_pct:g}% | "
           f"{args.slippage_bps:g}bps\n")
 
     hdr = (f"{'SYMBOL':<8}{'TRADES':>7}{'WIN%':>7}{'PF':>7}"
-           f"{'P&L':>10}{'FINAL':>10}{'MAXDD':>9}{'SHARPE':>8}")
+           f"{'P&L':>10}{'FINAL':>10}{'MAXDD%':>8}{'EXP(R)':>8}{'SHARPE':>8}")
     print(hdr)
     print("-" * len(hdr))
 
@@ -118,12 +135,31 @@ async def main() -> int:
         # BacktestStats.win_rate is a fraction; only the API layer scales it.
         print(f"{symbol:<8}{r.stats.total_trades:>7}{r.stats.win_rate * 100:>7.1f}"
               f"{r.stats.profit_factor:>7.2f}{float(r.stats.total_pnl):>10.2f}"
-              f"{final:>10.2f}{float(r.stats.max_drawdown):>9.2f}"
-              f"{r.stats.sharpe_ratio:>8.2f}")
+              f"{final:>10.2f}{r.stats.max_drawdown_pct:>8.1f}"
+              f"{r.stats.expectancy_r:>+8.2f}{r.stats.sharpe_ratio:>8.2f}")
 
     print("-" * len(hdr))
+    # Pooled expectancy: the basket's edge per unit of risk taken. Unlike
+    # summed dollar P&L it is comparable across symbols and position sizes.
+    all_r = [x for _, r in rows for x in _r_multiples(r.trades)]
+    total_trades = sum(r.stats.total_trades for _, r in rows)
     print(f"{wins}/{len(rows)} symbols profitable")
+    if all_r:
+        print(f"pooled expectancy: {sum(all_r) / len(all_r):+.3f}R "
+              f"over {len(all_r)} trades with stops")
     print("exit reasons: " + ", ".join(f"{k}={v}" for k, v in sorted(exits.items())))
+
+    # A basket that never traded says nothing about the edge, so return before
+    # the verdict below rather than let it report "no broad edge" for what is
+    # really a sizing floor.
+    if total_trades == 0 and risk.risk_per_trade_pct > 0:
+        print("\n=> NO TRADES TAKEN - this is a sizing floor, not a verdict on "
+              "the strategy. Risk-based sizing rounds down to zero whole shares "
+              "when one share would risk more than "
+              f"{float(risk.risk_per_trade_pct):g}% of {args.equity:g}. Raise "
+              "--equity or --risk-pct, or trade an instrument that supports "
+              "fractional size.")
+        return 0
 
     # The honest read, stated up front so it isn't rationalised afterwards.
     if wins <= len(rows) // 3:

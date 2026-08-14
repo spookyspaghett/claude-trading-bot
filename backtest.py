@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -17,7 +18,7 @@ from alpaca.data.historical import (
 from alpaca.data.requests import CryptoBarsRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
-from risk import RiskManager
+from risk import RiskManager, RiskPolicy
 from strategy import Direction, ORBStrategy
 
 if TYPE_CHECKING:
@@ -124,6 +125,37 @@ class BacktestStats:
     sharpe_ratio: float
     avg_hold_days: float
 
+    # ── Return & drawdown geometry ────────────────────────────────────────────
+    # A drawdown in dollars is unreadable without the account size behind it,
+    # and it is the percentage that decides whether a run is survivable.
+    total_return_pct: float = 0.0
+    cagr_pct: float = 0.0
+    max_drawdown_pct: float = 0.0
+    # How long the worst drawdown lasted. Depth gets the attention; duration is
+    # what actually decides whether a strategy gets abandoned mid-run.
+    max_drawdown_days: float = 0.0
+    # Sharpe punishes upside volatility as if it were risk. Sortino uses only
+    # downside deviation; Calmar measures return against the worst drawdown.
+    sortino_ratio: float = 0.0
+    calmar_ratio: float = 0.0
+
+    # ── Risk-normalised trade quality ─────────────────────────────────────────
+    # R = P&L ÷ the risk the trade was opened with (|entry − stop| × qty).
+    # Expectancy in R is the honest measure of edge: it is independent of
+    # position size, so it stays comparable across symbols, settings and
+    # account sizes in a way that dollar P&L never is.
+    expectancy_r: float = 0.0
+    avg_win_r: float = 0.0
+    avg_loss_r: float = 0.0
+    r_trades: int = 0          # trades carrying a usable stop, i.e. the R sample
+    max_consecutive_losses: int = 0
+    exposure_pct: float = 0.0  # share of the test window actually holding risk
+
+    # ── Bootstrap risk (see _monte_carlo) ─────────────────────────────────────
+    mc_median_max_dd_pct: float = 0.0
+    mc_p95_max_dd_pct: float = 0.0
+    mc_prob_negative: float = 0.0
+
 
 @dataclass
 class BacktestResult:
@@ -207,7 +239,9 @@ def _run_with_bars(
             stop_loss_pct=risk_config.stop_loss_pct,
             daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
             max_open_positions=risk_config.max_open_positions,
+            policy=RiskPolicy.from_config(risk_config),
         )
+        risk.set_account_equity(equity)
 
         open_trade: Trade | None = None
         cur_stop = Decimal("0")   # trails up; established BEFORE the current bar
@@ -236,6 +270,7 @@ def _run_with_bars(
                 if hit:
                     pnl = _close(open_trade, cur_stop, bar_et, "trail" if trailed else "stop")
                     equity += pnl
+                    risk.set_account_equity(equity)
                     trades.append(open_trade)
                     risk.record_fill(symbol, Decimal("0"), pnl)
                     open_trade = None
@@ -249,6 +284,7 @@ def _run_with_bars(
                 if loser_cut > 0 and loss >= loser_cut:
                     pnl = _close(open_trade, bar_close, bar_et, "loser_cut")
                     equity += pnl
+                    risk.set_account_equity(equity)
                     trades.append(open_trade)
                     risk.record_fill(symbol, Decimal("0"), pnl)
                     open_trade = None
@@ -274,6 +310,7 @@ def _run_with_bars(
             if sig.direction == Direction.FLAT and open_trade is not None:
                 pnl = _close(open_trade, bar_close, bar_et, "eod")
                 equity += pnl
+                risk.set_account_equity(equity)
                 trades.append(open_trade)
                 open_trade = None
 
@@ -281,7 +318,9 @@ def _run_with_bars(
                 ok, _ = risk.check_new_order(symbol)
                 if not ok:
                     continue
-                qty = risk.compute_qty(sig.entry_price)
+                qty = risk.compute_qty(
+                    sig.entry_price, symbol=symbol, stop_price=sig.stop_price,
+                )
                 if qty <= Decimal("0"):
                     continue
                 is_buy = sig.direction == Direction.BUY
@@ -294,12 +333,14 @@ def _run_with_bars(
                 cur_stop = sig.stop_price
                 peak = entry_fill
                 trailed = False
-                risk.record_fill(symbol, qty, Decimal("0"))
+                risk.record_fill(symbol, qty, Decimal("0"),
+                                 entry_price=entry_fill, stop_price=sig.stop_price)
 
         if open_trade is not None and day_bars:
             last = day_bars[-1]
             pnl = _close(open_trade, Decimal(str(last.close)), _to_et(last.timestamp), "eod_forced")
             equity += pnl
+            risk.set_account_equity(equity)
             trades.append(open_trade)
             open_trade = None
 
@@ -316,7 +357,7 @@ def _run_with_bars(
         end_date=str(end),
         trades=trades,
         equity_curve=equity_curve,
-        stats=_compute_stats(trades, equity_curve),
+        stats=_compute_stats(trades, equity_curve, starting_equity),
         strategy_used="ORB (1-min, fixed stop + trail + loser-cut)",
     )
 
@@ -381,7 +422,9 @@ def _run_with_daily_bars(
         stop_loss_pct=risk_config.stop_loss_pct,
         daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
         max_open_positions=risk_config.max_open_positions,
+        policy=RiskPolicy.from_config(risk_config),
     )
+    risk.set_account_equity(starting_equity)
 
     trades: list[Trade] = []
     equity = starting_equity
@@ -469,6 +512,7 @@ def _run_with_daily_bars(
                 open_trade.exit_reason = exit_reason
                 open_trade.pnl         = pnl
                 equity += pnl
+                risk.set_account_equity(equity)
                 trades.append(open_trade)
                 close_qty = -open_trade.qty if open_trade.direction == "BUY" else open_trade.qty
                 risk.record_fill(symbol, close_qty, pnl)
@@ -509,6 +553,7 @@ def _run_with_daily_bars(
                 open_trade.exit_reason = "channel"
                 open_trade.pnl         = pnl
                 equity += pnl
+                risk.set_account_equity(equity)
                 trades.append(open_trade)
                 close_qty = -open_trade.qty if open_trade.direction == "BUY" else open_trade.qty
                 risk.record_fill(symbol, close_qty, pnl)
@@ -521,30 +566,29 @@ def _run_with_daily_bars(
             ok, _ = risk.check_new_order(symbol)
             if ok:
                 bar_open = Decimal(str(bar.open))
-                if pending_direction == "BUY":
-                    qty = risk.compute_qty(bar_open)
+                if pending_direction in ("BUY", "SELL"):
+                    is_buy = pending_direction == "BUY"
+                    # Establish the stop BEFORE sizing: it is the input the
+                    # quantity is solved from, not a detail settled afterwards.
+                    stop = (
+                        bar_open - pending_stop_dist if is_buy
+                        else bar_open + pending_stop_dist
+                    ).quantize(Decimal("0.01"))
+                    qty = risk.compute_qty(
+                        bar_open, symbol=symbol, stop_price=stop,
+                    )
                     if qty > Decimal("0"):
-                        stop = (bar_open - pending_stop_dist).quantize(Decimal("0.01"))
                         open_trade = Trade(
-                            symbol=symbol, direction="BUY",
+                            symbol=symbol, direction=pending_direction,
                             entry_time=bar_et, entry_price=bar_open,
                             stop_price=stop, qty=qty,
                         )
                         current_stop_px = stop
                         best_px         = bar_open
-                        risk.record_fill(symbol, qty, Decimal("0"))
-                elif pending_direction == "SELL":
-                    qty = risk.compute_qty(bar_open)
-                    if qty > Decimal("0"):
-                        stop = (bar_open + pending_stop_dist).quantize(Decimal("0.01"))
-                        open_trade = Trade(
-                            symbol=symbol, direction="SELL",
-                            entry_time=bar_et, entry_price=bar_open,
-                            stop_price=stop, qty=qty,
+                        risk.record_fill(
+                            symbol, qty if is_buy else -qty, Decimal("0"),
+                            entry_price=bar_open, stop_price=stop,
                         )
-                        current_stop_px = stop
-                        best_px         = bar_open
-                        risk.record_fill(symbol, -qty, Decimal("0"))
             pending_direction = None
             pending_stop_dist = Decimal("0")
 
@@ -586,6 +630,7 @@ def _run_with_daily_bars(
         open_trade.exit_reason = "end"
         open_trade.pnl         = pnl
         equity += pnl
+        risk.set_account_equity(equity)
         trades.append(open_trade)
 
     return BacktestResult(
@@ -594,7 +639,7 @@ def _run_with_daily_bars(
         end_date=str(end),
         trades=trades,
         equity_curve=equity_curve,
-        stats=_compute_stats(trades, equity_curve),
+        stats=_compute_stats(trades, equity_curve, starting_equity),
         strategy_used=_daily_strategy_name(
             lookback, long_only, trend_ma, fast_ma,
             use_atr_stop, atr_period, atr_multiplier,
@@ -653,7 +698,9 @@ def _run_with_trend_sr(
         stop_loss_pct=risk_config.stop_loss_pct,
         daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
         max_open_positions=risk_config.max_open_positions,
+        policy=RiskPolicy.from_config(risk_config),
     )
+    risk.set_account_equity(starting_equity)
 
     trades: list[Trade] = []
     equity = starting_equity
@@ -667,7 +714,10 @@ def _run_with_trend_sr(
 
         if direction in (Direction.BUY, Direction.SELL) and open_trade is None:
             assert sig is not None
-            qty = risk.compute_qty(sig.entry_price, fractional=True)
+            qty = risk.compute_qty(
+                sig.entry_price, fractional=True,
+                symbol=symbol, stop_price=sig.stop_price,
+            )
             if qty > Decimal("0"):
                 is_buy = sig.direction == Direction.BUY
                 open_trade = Trade(
@@ -688,6 +738,7 @@ def _run_with_trend_sr(
             open_trade.exit_reason = "signal"
             open_trade.pnl = pnl
             equity += pnl
+            risk.set_account_equity(equity)
             trades.append(open_trade)
             open_trade = None
 
@@ -709,6 +760,7 @@ def _run_with_trend_sr(
         open_trade.exit_reason = "end"
         open_trade.pnl = pnl
         equity += pnl
+        risk.set_account_equity(equity)
         trades.append(open_trade)
 
     trail_desc = f"{trailing_activation_pct:.0f}%->{trailing_pct:.0f}%"
@@ -724,7 +776,7 @@ def _run_with_trend_sr(
     return BacktestResult(
         symbol=symbol, start_date=str(start), end_date=str(end),
         trades=trades, equity_curve=equity_curve,
-        stats=_compute_stats(trades, equity_curve), strategy_used=name,
+        stats=_compute_stats(trades, equity_curve, starting_equity), strategy_used=name,
     )
 
 
@@ -757,7 +809,9 @@ def _run_with_vwap(
         stop_loss_pct=risk_config.stop_loss_pct,
         daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
         max_open_positions=risk_config.max_open_positions,
+        policy=RiskPolicy.from_config(risk_config),
     )
+    risk.set_account_equity(starting_equity)
 
     trades: list[Trade] = []
     equity = starting_equity
@@ -771,7 +825,10 @@ def _run_with_vwap(
 
         if direction in (Direction.BUY, Direction.SELL) and open_trade is None:
             assert sig is not None
-            qty = risk.compute_qty(sig.entry_price, fractional=is_crypto)
+            qty = risk.compute_qty(
+                sig.entry_price, fractional=is_crypto,
+                symbol=symbol, stop_price=sig.stop_price,
+            )
             if qty > Decimal("0"):
                 is_buy = sig.direction == Direction.BUY
                 open_trade = Trade(
@@ -792,6 +849,7 @@ def _run_with_vwap(
             open_trade.exit_reason = sig.reason
             open_trade.pnl = pnl
             equity += pnl
+            risk.set_account_equity(equity)
             trades.append(open_trade)
             open_trade = None
 
@@ -810,12 +868,13 @@ def _run_with_vwap(
         open_trade.exit_reason = "end"
         open_trade.pnl = pnl
         equity += pnl
+        risk.set_account_equity(equity)
         trades.append(open_trade)
 
     return BacktestResult(
         symbol=symbol, start_date=str(start), end_date=str(end),
         trades=trades, equity_curve=equity_curve,
-        stats=_compute_stats(trades, equity_curve),
+        stats=_compute_stats(trades, equity_curve, starting_equity),
         strategy_used=(f"VWAP mean reversion ({cfg.band_mult}σ entry, "
                        f"{cfg.stop_mult}σ stop{', long only' if long_only else ''})"),
     )
@@ -852,7 +911,9 @@ def _run_with_ema(
         stop_loss_pct=risk_config.stop_loss_pct,
         daily_loss_limit_usd=risk_config.daily_loss_limit_usd,
         max_open_positions=risk_config.max_open_positions,
+        policy=RiskPolicy.from_config(risk_config),
     )
+    risk.set_account_equity(starting_equity)
 
     trades: list[Trade] = []
     equity = starting_equity
@@ -882,6 +943,7 @@ def _run_with_ema(
             if hit:
                 pnl = _close(open_trade, cur_stop, bar_et, "trail" if trailed else "stop")
                 equity += pnl
+                risk.set_account_equity(equity)
                 trades.append(open_trade)
                 risk.record_fill(symbol, Decimal("0"), pnl)
                 open_trade = None
@@ -893,6 +955,7 @@ def _run_with_ema(
                 if loser_cut > 0 and loss >= loser_cut:
                     pnl = _close(open_trade, bar_close, bar_et, "loser_cut")
                     equity += pnl
+                    risk.set_account_equity(equity)
                     trades.append(open_trade)
                     risk.record_fill(symbol, Decimal("0"), pnl)
                     open_trade = None
@@ -910,13 +973,16 @@ def _run_with_ema(
         if sig is not None and sig.direction == Direction.FLAT and open_trade is not None:
             pnl = _close(open_trade, sig.entry_price, bar_et, "signal")
             equity += pnl
+            risk.set_account_equity(equity)
             trades.append(open_trade)
             open_trade = None
         elif (sig is not None and sig.direction in (Direction.BUY, Direction.SELL)
               and open_trade is None):
             ok, _ = risk.check_new_order(symbol)
             if ok:
-                qty = risk.compute_qty(sig.entry_price)
+                qty = risk.compute_qty(
+                    sig.entry_price, symbol=symbol, stop_price=sig.stop_price,
+                )
                 if qty > Decimal("0"):
                     is_buy = sig.direction == Direction.BUY
                     entry_fill = costs.fill(sig.entry_price, is_buy=is_buy)
@@ -926,7 +992,8 @@ def _run_with_ema(
                         stop_price=sig.stop_price, qty=qty,
                     )
                     cur_stop, peak, trailed = sig.stop_price, entry_fill, False
-                    risk.record_fill(symbol, qty, Decimal("0"))
+                    risk.record_fill(symbol, qty, Decimal("0"),
+                                     entry_price=entry_fill, stop_price=sig.stop_price)
 
         equity_curve.append({"timestamp": int(bar_et.timestamp()), "equity": float(equity)})
 
@@ -934,12 +1001,13 @@ def _run_with_ema(
         last = bars[-1]
         pnl = _close(open_trade, Decimal(str(last.close)), _to_et(last.timestamp), "end")
         equity += pnl
+        risk.set_account_equity(equity)
         trades.append(open_trade)
 
     return BacktestResult(
         symbol=symbol, start_date=str(start), end_date=str(end),
         trades=trades, equity_curve=equity_curve,
-        stats=_compute_stats(trades, equity_curve),
+        stats=_compute_stats(trades, equity_curve, starting_equity),
         strategy_used=f"EMA crossover ({fast_period}/{slow_period}, stop+trail+loser-cut)",
     )
 
@@ -1258,9 +1326,129 @@ def _run_sync_from_bars(
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
 
+def _r_multiples(trades: list[Trade]) -> list[float]:
+    """P&L of each trade expressed in units of the risk it was opened with.
+
+    Trades whose stop is missing or degenerate are skipped rather than counted
+    as zero — a strategy that only sometimes defines a stop should report a
+    smaller R sample, not a diluted expectancy.
+    """
+    out: list[float] = []
+    for t in trades:
+        # A stop of 0 means the engine recorded none, not a stop at zero —
+        # taking it literally would price the risk as the whole position and
+        # report a real loss as a rounding error.
+        if t.stop_price <= 0:
+            continue
+        risk = abs(t.entry_price - t.stop_price) * t.qty
+        if risk > 0:
+            out.append(float(t.pnl / risk))
+    return out
+
+
+def _drawdown_profile(
+    equity_curve: list[dict[str, object]],
+) -> tuple[Decimal, float, float]:
+    """Return (max drawdown $, max drawdown %, longest drawdown in days).
+
+    Duration is measured from each equity peak to the point that peak is
+    regained; a drawdown still open at the end of the run counts up to the last
+    bar, since that is exactly the case where it hurts most.
+    """
+    peak = Decimal("0")
+    peak_ts: int | None = None
+    max_dd = Decimal("0")
+    max_dd_pct = 0.0
+    longest = 0.0
+    for point in equity_curve:
+        eq = Decimal(str(point["equity"]))
+        ts = int(point["timestamp"])  # type: ignore[call-overload]
+        if peak_ts is None or eq > peak:
+            peak, peak_ts = eq, ts
+        drop = peak - eq
+        if drop > max_dd:
+            max_dd = drop
+        if peak > 0:
+            max_dd_pct = max(max_dd_pct, float(drop / peak * 100))
+        if eq < peak:
+            longest = max(longest, (ts - peak_ts) / 86400)
+    return max_dd, max_dd_pct, longest
+
+
+def _daily_returns(equity_curve: list[dict[str, object]]) -> list[float]:
+    """Collapse the curve to one equity value per calendar day, then difference.
+
+    Resampling first is what keeps the ratios comparable across strategies:
+    trend/SR appends a point per 1-minute bar, and annualising minute returns
+    inflates Sharpe by more than an order of magnitude (#7).
+    """
+    daily: list[float] = []
+    last_day: object = None
+    for point in equity_curve:
+        ts = int(point["timestamp"])  # type: ignore[call-overload]
+        day = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        if day != last_day:
+            daily.append(float(point["equity"]))  # type: ignore[arg-type]
+            last_day = day
+        else:
+            daily[-1] = float(point["equity"])  # type: ignore[arg-type]
+    return [
+        (daily[i] - daily[i - 1]) / daily[i - 1]
+        for i in range(1, len(daily))
+        if daily[i - 1] != 0
+    ]
+
+
+def _monte_carlo(
+    pnls: list[float],
+    starting_equity: float,
+    iterations: int = 1000,
+    seed: int = 20260814,
+) -> tuple[float, float, float]:
+    """Bootstrap the trade sequence to separate edge from ordering luck.
+
+    The realised equity curve is one sample of a process that could have dealt
+    the same trades in any order. Resampling with replacement answers the
+    question the single curve cannot: how deep a drawdown this strategy can
+    produce on a run that is merely unlucky rather than broken. The p95 figure
+    is the one to size against — a max drawdown observed once is a lower bound,
+    not a limit.
+
+    Caveat: resampling assumes trades are independent. Trend systems cluster
+    their wins, so real drawdowns can exceed the bootstrap's. Read these as a
+    floor on the risk, not a ceiling.
+
+    Returns (median max drawdown %, 95th-percentile max drawdown %,
+    probability of finishing below the starting equity).
+    """
+    if not pnls or starting_equity <= 0:
+        return 0.0, 0.0, 0.0
+    rng = random.Random(seed)
+    n = len(pnls)
+    drawdowns: list[float] = []
+    losers = 0
+    for _ in range(iterations):
+        equity = starting_equity
+        peak = starting_equity
+        worst = 0.0
+        for _ in range(n):
+            equity += pnls[rng.randrange(n)]
+            peak = max(peak, equity)
+            if peak > 0:
+                worst = max(worst, (peak - equity) / peak * 100)
+        drawdowns.append(worst)
+        if equity < starting_equity:
+            losers += 1
+    drawdowns.sort()
+    median = drawdowns[len(drawdowns) // 2]
+    p95 = drawdowns[min(len(drawdowns) - 1, int(len(drawdowns) * 0.95))]
+    return median, p95, losers / iterations
+
+
 def _compute_stats(
     trades: list[Trade],
     equity_curve: list[dict[str, object]],
+    starting_equity: Decimal = Decimal("0"),
 ) -> BacktestStats:
     if not trades:
         return BacktestStats(
@@ -1280,43 +1468,27 @@ def _compute_stats(
     gross_loss   = abs(sum((t.pnl for t in losses), Decimal("0")))
     profit_factor = float(gross_profit / gross_loss) if gross_loss > 0 else float("inf")
 
-    peak   = Decimal("0")
-    max_dd = Decimal("0")
-    for point in equity_curve:
-        eq     = Decimal(str(point["equity"]))
-        peak   = max(peak, eq)
-        max_dd = max(max_dd, peak - eq)
+    max_dd, max_dd_pct, max_dd_days = _drawdown_profile(equity_curve)
 
-    # Sharpe from a DAILY-resampled equity curve so it's comparable across
-    # strategies regardless of bar cadence (#7). Trend/SR appends a point per
-    # 1-minute bar; collapsing to one equity value per calendar day fixes the
-    # hugely inflated Sharpe that came from annualising minute returns.
+    # Sharpe/Sortino from a DAILY-resampled equity curve so they're comparable
+    # across strategies regardless of bar cadence (#7).
+    ANNUALISE = 252 ** 0.5
     sharpe = 0.0
-    daily_equity: list[Decimal] = []
-    last_day: object = None
-    for point in equity_curve:
-        ts = int(point["timestamp"])  # type: ignore[call-overload]
-        day = datetime.fromtimestamp(ts, tz=timezone.utc).date()
-        if day != last_day:
-            daily_equity.append(Decimal(str(point["equity"])))
-            last_day = day
-        else:
-            daily_equity[-1] = Decimal(str(point["equity"]))  # last value of the day
-    if len(daily_equity) > 2:
-        rets = [
-            (daily_equity[i] - daily_equity[i - 1]) / daily_equity[i - 1]
-            for i in range(1, len(daily_equity))
-            if daily_equity[i - 1] != 0
-        ]
-        if len(rets) > 1:
-            avg_r    = sum(rets) / len(rets)
-            variance = sum((r - avg_r) ** 2 for r in rets) / len(rets)
-            try:
-                std = variance.sqrt()
-                if std > 0:
-                    sharpe = float(avg_r / std * Decimal("15.87"))  # √252 trading days
-            except InvalidOperation:
-                pass
+    sortino = 0.0
+    rets = _daily_returns(equity_curve)
+    if len(rets) > 1:
+        avg_r = sum(rets) / len(rets)
+        std = (sum((r - avg_r) ** 2 for r in rets) / len(rets)) ** 0.5
+        if std > 0:
+            sharpe = avg_r / std * ANNUALISE
+        # Sortino: the same ratio measured against downside deviation only, so
+        # a strategy isn't penalised for the large up-days that are the entire
+        # point of trend following.
+        downside = [r for r in rets if r < 0]
+        if downside:
+            dstd = (sum(r * r for r in downside) / len(rets)) ** 0.5
+            if dstd > 0:
+                sortino = avg_r / dstd * ANNUALISE
 
     hold_days = [
         (t.exit_time - t.entry_time).total_seconds() / 86400
@@ -1324,6 +1496,38 @@ def _compute_stats(
         if t.exit_time is not None
     ]
     avg_hold_days = sum(hold_days) / len(hold_days) if hold_days else 0.0
+
+    # Compounded growth over the actual span of the run.
+    start_eq = float(starting_equity)
+    total_return_pct = float(total_pnl) / start_eq * 100 if start_eq > 0 else 0.0
+    span_days = 0.0
+    if len(equity_curve) > 1:
+        span_days = (
+            int(equity_curve[-1]["timestamp"])    # type: ignore[call-overload]
+            - int(equity_curve[0]["timestamp"])   # type: ignore[call-overload]
+        ) / 86400
+    cagr = 0.0
+    if start_eq > 0 and span_days > 0:
+        ending = start_eq + float(total_pnl)
+        if ending > 0:
+            cagr = ((ending / start_eq) ** (365.25 / span_days) - 1) * 100
+    calmar = cagr / max_dd_pct if max_dd_pct > 0 else 0.0
+    exposure_pct = (sum(hold_days) / span_days * 100) if span_days > 0 else 0.0
+
+    # Risk-normalised trade quality.
+    rs = _r_multiples(trades)
+    r_wins = [r for r in rs if r > 0]
+    r_losses = [r for r in rs if r <= 0]
+    expectancy_r = sum(rs) / len(rs) if rs else 0.0
+
+    worst_streak = streak = 0
+    for t in trades:
+        streak = streak + 1 if t.pnl <= 0 else 0
+        worst_streak = max(worst_streak, streak)
+
+    mc_median, mc_p95, mc_prob_neg = _monte_carlo(
+        [float(t.pnl) for t in trades], start_eq,
+    )
 
     return BacktestStats(
         total_trades=len(trades),
@@ -1337,6 +1541,21 @@ def _compute_stats(
         max_drawdown=max_dd,
         sharpe_ratio=sharpe,
         avg_hold_days=avg_hold_days,
+        total_return_pct=total_return_pct,
+        cagr_pct=cagr,
+        max_drawdown_pct=max_dd_pct,
+        max_drawdown_days=max_dd_days,
+        sortino_ratio=sortino,
+        calmar_ratio=calmar,
+        expectancy_r=expectancy_r,
+        avg_win_r=sum(r_wins) / len(r_wins) if r_wins else 0.0,
+        avg_loss_r=abs(sum(r_losses) / len(r_losses)) if r_losses else 0.0,
+        r_trades=len(rs),
+        max_consecutive_losses=worst_streak,
+        exposure_pct=exposure_pct,
+        mc_median_max_dd_pct=mc_median,
+        mc_p95_max_dd_pct=mc_p95,
+        mc_prob_negative=mc_prob_neg,
     )
 
 

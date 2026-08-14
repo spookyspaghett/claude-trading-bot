@@ -18,14 +18,59 @@ class RiskConfig(BaseModel):
     trailing_stop_pct: Decimal = Decimal("10")   # trailing stop % (10 = 10%)
     loser_cut_pct: Decimal = Decimal("7")         # cut position if unrealized loss exceeds this %
 
+    # ── Risk-based position sizing ────────────────────────────────────────────
+    # % of equity risked between entry and stop on each trade. This is the knob
+    # that makes dollar risk an input instead of a by-product of stop distance.
+    # 0 = legacy behaviour (every position sized to max_position_usd).
+    risk_per_trade_pct: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+
+    # ── Portfolio-level risk caps ─────────────────────────────────────────────
+    # Ceiling on total open risk (Σ entry−stop × qty) as % of equity. 0 = off.
+    max_portfolio_heat_pct: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    # Same ceiling within one correlation group. 0 = off.
+    max_group_heat_pct: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    # Group label → symbols that tend to move together. Symbols left out are
+    # treated as their own group.
+    correlation_groups: dict[str, list[str]] = Field(default_factory=dict)
+    # Gross notional ceiling as % of equity (100 = no leverage).
+    max_gross_exposure_pct: Decimal = Field(default=Decimal("100"), ge=0)
+
+    # ── Loss limits & drawdown throttle ───────────────────────────────────────
+    # Daily loss limit as % of equity; combined with the USD limit by taking
+    # whichever is tighter, so enabling it can only reduce risk. 0 = off.
+    daily_loss_limit_pct: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    # Start shrinking per-trade risk at this peak-to-trough drawdown. 0 = off.
+    derisk_start_dd_pct: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    # Stop opening new positions at this drawdown. 0 = off.
+    halt_dd_pct: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    # Floor for the throttle: risk never shrinks below this fraction of normal.
+    min_risk_scale: Decimal = Field(default=Decimal("0.25"), ge=0, le=1)
+
     @field_validator(
         "max_position_usd", "stop_loss_pct", "daily_loss_limit_usd",
         "trailing_stop_pct", "loser_cut_pct",
+        "risk_per_trade_pct", "max_portfolio_heat_pct", "max_group_heat_pct",
+        "max_gross_exposure_pct", "daily_loss_limit_pct",
+        "derisk_start_dd_pct", "halt_dd_pct", "min_risk_scale",
         mode="before",
     )
     @classmethod
     def coerce_decimal(cls, v: object) -> Decimal:
         return Decimal(str(v))
+
+    @model_validator(mode="after")
+    def check_drawdown_ladder(self) -> RiskConfig:
+        """The throttle only makes sense if it starts before it halts."""
+        if (
+            self.derisk_start_dd_pct > 0
+            and self.halt_dd_pct > 0
+            and self.halt_dd_pct <= self.derisk_start_dd_pct
+        ):
+            raise ValueError(
+                f"halt_dd_pct ({self.halt_dd_pct}) must be greater than "
+                f"derisk_start_dd_pct ({self.derisk_start_dd_pct})"
+            )
+        return self
 
 
 class OrbConfig(BaseModel):
