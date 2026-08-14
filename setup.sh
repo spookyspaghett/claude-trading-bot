@@ -9,27 +9,115 @@
 #   chmod +x setup.sh
 #   sudo ./setup.sh            # normal run
 #   sudo ./setup.sh --force    # force full reinstall + UI rebuild
+#   sudo ./setup.sh --help     # show usage
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+START_TS=$(date +%s)
+
 # ── Colours ───────────────────────────────────────────────────────────────────
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+# Stay quiet when the output isn't a terminal (piped to a file, run from CI) or
+# when NO_COLOR is set — escape codes in a log file help nobody.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
+    CYAN='\033[0;36m';  BOLD='\033[1m';      DIM='\033[2m'
+    NC='\033[0m'
+    # Banner gradient, matching the dashboard's blue→violet logo. Falls back to
+    # plain cyan on terminals without 24-bit colour.
+    if [[ "${COLORTERM:-}" == *truecolor* || "${COLORTERM:-}" == *24bit* ]]; then
+        G1='\033[38;2;96;165;250m'   # blue-400
+        G2='\033[38;2;129;140;248m'  # indigo-400
+        G3='\033[38;2;167;139;250m'  # violet-400
+    else
+        G1="$CYAN"; G2="$CYAN"; G3="$CYAN"
+    fi
+else
+    GREEN=''; YELLOW=''; RED=''; CYAN=''; BOLD=''; DIM=''; NC=''
+    G1=''; G2=''; G3=''
+fi
 
 info()    { echo -e "  ${GREEN}✓${NC}  $*"; }
 warn()    { echo -e "  ${YELLOW}!${NC}  $*"; }
 err()     { echo -e "  ${RED}✗${NC}  $*"; }
-section() { echo -e "\n${CYAN}${BOLD}── $* ──${NC}"; }
-skip()    { echo -e "  ${NC}·${NC}  $* ${CYAN}(up to date)${NC}"; }
+skip()    { echo -e "  ${DIM}·${NC}  $* ${DIM}(up to date)${NC}"; }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Seconds since $1, formatted for humans — only worth printing when a step
+# actually took a while.
+elapsed() {
+    local d=$(($(date +%s) - $1))
+    if   [ "$d" -lt 2  ]; then echo ""
+    elif [ "$d" -lt 60 ]; then echo "${DIM}(${d}s)${NC}"
+    else                       echo "${DIM}($((d / 60))m $((d % 60))s)${NC}"
+    fi
+}
+
+# Draws a box that always fits its message, however long it is.
+#
+# Width is counted in characters rather than with ${#msg}, which counts BYTES
+# under a non-UTF-8 locale — an em-dash is three bytes, so the rule came out
+# wider than the text it was meant to frame.
+box() {
+    local colour="$1"; shift
+    local msg="$*" rule width
+    width=$(printf '%s' "$msg" | LC_ALL=C.UTF-8 wc -m 2>/dev/null | tr -d '[:space:]')
+    [[ "$width" =~ ^[0-9]+$ ]] || width=${#msg}
+    printf -v rule '%*s' "$(( width + 2 ))" ''
+    echo -e "${colour}╔${rule// /═}╗${NC}"
+    echo -e "${colour}║ ${msg} ║${NC}"
+    echo -e "${colour}╚${rule// /═}╝${NC}"
+}
+
+STEP=0
+section() {
+    STEP=$((STEP + 1))
+    SECTION_TS=$(date +%s)
+    printf "\n${DIM}[%d/%d]${NC} ${CYAN}${BOLD}%s${NC}\n" "$STEP" "$TOTAL_STEPS" "$*"
+}
+
+banner() {
+    echo ""
+    echo -e "${G1}${BOLD}    ╔═╗╦  ╔═╗╦ ╦╔╦╗╔═╗  ╔╦╗╦═╗╔═╗╔╦╗╦╔╗╔╔═╗${NC}"
+    echo -e "${G2}${BOLD}    ║  ║  ╠═╣║ ║ ║║║╣    ║ ╠╦╝╠═╣ ║║║║║║║ ╦${NC}"
+    echo -e "${G3}${BOLD}    ╚═╝╩═╝╩ ╩╚═╝═╩╝╚═╝   ╩ ╩╚═╩ ╩═╩╝╩╝╚╝╚═╝${NC}"
+    echo -e "${GREEN}      ▁▂▃▅▄▆█▆▄▅▇█▇▅▃▄▆█▇▆█${NC}  ${DIM}algorithmic trading${NC}"
+    echo ""
+}
+
+usage() {
+    banner
+    cat <<'USAGE'
+  Usage:  sudo ./setup.sh [options]
+
+  Options:
+    --force      Reinstall every dependency and rebuild the UI, even when
+                 nothing has changed. Use after a corrupted install.
+    --no-color   Disable coloured output (NO_COLOR=1 does the same).
+    --help       Show this message.
+
+  With no options the script only does what is actually needed: it pulls new
+  commits, reinstalls dependencies whose manifests changed, rebuilds the UI if
+  its sources are newer than the last build, then restarts the service.
+USAGE
+    echo ""
+    exit 0
+}
+
+# ── Arguments ─────────────────────────────────────────────────────────────────
 FORCE=false
+for arg in "$@"; do
+    case "$arg" in
+        --force)    FORCE=true ;;
+        --no-color) GREEN=''; YELLOW=''; RED=''; CYAN=''; BOLD=''; DIM=''
+                    NC=''; G1=''; G2=''; G3='' ;;
+        -h|--help)  usage ;;
+        *)          err "Unknown option: $arg"
+                    echo "  Try ${BOLD}./setup.sh --help${NC}"
+                    exit 1 ;;
+    esac
+done
+
 CURRENT_USER=$(logname 2>/dev/null || whoami)
-[[ "${1:-}" == "--force" ]] && FORCE=true
 
 # Timestamp file: touched after a successful pip install
 PY_STAMP="$SCRIPT_DIR/.venv/.install_stamp"
@@ -40,13 +128,18 @@ if [ ! -d "$SCRIPT_DIR/.venv" ] || [ ! -f "/etc/systemd/system/claude-trading.se
     FIRST_RUN=true
 fi
 
+# System packages and the firewall rule only run on a first install.
+TOTAL_STEPS=10
+[ "$FIRST_RUN" = true ] && TOTAL_STEPS=12
+
+banner
 if [ "$FIRST_RUN" = true ]; then
-    echo -e "\n${BOLD}Claude Trading — First-time Setup${NC}"
+    echo -e "  ${BOLD}First-time setup${NC} ${DIM}·${NC} installing everything from scratch"
 else
-    echo -e "\n${BOLD}Claude Trading — Update & Restart${NC}"
+    echo -e "  ${BOLD}Update & restart${NC} ${DIM}·${NC} only rebuilding what changed"
 fi
-[ "$FORCE" = true ] && warn "--force flag set: full reinstall will run"
-echo ""
+echo -e "  ${DIM}${SCRIPT_DIR}${NC}"
+[ "$FORCE" = true ] && warn "--force set: reinstalling everything regardless"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. System packages (first run only)
@@ -57,7 +150,7 @@ if [ "$FIRST_RUN" = true ]; then
     sudo apt-get install -y -qq \
         python3 python3-pip python3-venv \
         curl ca-certificates git
-    info "System packages installed"
+    info "System packages installed $(elapsed "$SECTION_TS")"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -112,7 +205,7 @@ else
     sudo apt-get update -qq
     sudo apt-get install -y -qq python3.11 python3.11-venv
     PYTHON=python3.11
-    info "Python 3.11 installed"
+    info "Python 3.11 installed $(elapsed "$SECTION_TS")"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -127,7 +220,7 @@ else
     curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/nodesource_setup.sh
     sudo bash /tmp/nodesource_setup.sh
     sudo apt-get install -y -qq nodejs
-    info "Node.js $(node -v) installed"
+    info "Node.js $(node -v) installed $(elapsed "$SECTION_TS")"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,10 +250,11 @@ elif [ "$GIT_UPDATED" = true ];                    then PY_NEEDS_INSTALL=true
 fi
 
 if [ "$PY_NEEDS_INSTALL" = true ]; then
+    echo -e "  ${DIM}installing — this can take a couple of minutes${NC}"
     pip install --quiet --upgrade pip setuptools wheel
     pip install --quiet -e ".[dev]"
     touch "$PY_STAMP"
-    info "Python dependencies installed"
+    info "Python dependencies installed $(elapsed "$SECTION_TS")"
 else
     skip "Python dependencies"
 fi
@@ -181,9 +275,10 @@ elif [ ! -x "node_modules/.bin/tsc" ];                         then NODE_NEEDS_I
 fi
 
 if [ "$NODE_NEEDS_INSTALL" = true ]; then
+    echo -e "  ${DIM}installing — this can take a couple of minutes${NC}"
     rm -rf node_modules          # remove before reinstall to clear any bad perms
     npm install --silent
-    info "Node dependencies installed"
+    info "Node dependencies installed $(elapsed "$SECTION_TS")"
 else
     skip "Node dependencies"
 fi
@@ -210,7 +305,7 @@ fi
 
 if [ "$UI_NEEDS_BUILD" = true ]; then
     npm run build
-    info "UI built → ui/dist/"
+    info "UI built → ui/dist/ $(elapsed "$SECTION_TS")"
 else
     skip "UI (no source changes detected)"
 fi
@@ -228,13 +323,16 @@ chown -R "$CURRENT_USER":"$CURRENT_USER" "$SCRIPT_DIR"
 # 10. .env check
 # ─────────────────────────────────────────────────────────────────────────────
 section "Environment file"
+NEEDS_KEYS=false
 if [ ! -f ".env" ]; then
     cp .env.example .env
     warn ".env created from .env.example — add your Alpaca API keys before starting the bot"
+    NEEDS_KEYS=true
 else
     # Warn if keys are still the placeholder values
     if grep -q "your_paper_api_key_here" .env 2>/dev/null; then
         warn ".env has placeholder keys — edit .env before starting the bot!"
+        NEEDS_KEYS=true
     else
         info ".env configured"
     fi
@@ -316,25 +414,34 @@ fi
 # Done
 # ─────────────────────────────────────────────────────────────────────────────
 SERVER_IP=$(hostname -I | awk '{print $1}')
+TOTAL=$(( $(date +%s) - START_TS ))
 
 echo ""
 if [ "$SVC_OK" = true ]; then
-    echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
     if [ "$FIRST_RUN" = true ]; then
-    echo -e "${GREEN}${BOLD}║  Setup complete — application is live!               ║${NC}"
+        box "${GREEN}${BOLD}" "Setup complete — application is live"
     else
-    echo -e "${GREEN}${BOLD}║  Update applied — application restarted!             ║${NC}"
+        box "${GREEN}${BOLD}" "Update applied — application restarted"
     fi
-    echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
 else
-    echo -e "${RED}${BOLD}╔══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}${BOLD}║  Setup finished but service did not start cleanly    ║${NC}"
-    echo -e "${RED}${BOLD}╚══════════════════════════════════════════════════════╝${NC}"
+    box "${RED}${BOLD}" "Setup finished but the service did not start cleanly"
 fi
+
 echo ""
-echo -e "  Dashboard:      ${GREEN}${BOLD}http://${SERVER_IP}:8000${NC}"
+echo -e "  ${DIM}Dashboard${NC}   ${GREEN}${BOLD}http://${SERVER_IP}:8000${NC}"
+echo -e "  ${DIM}Finished${NC}    in $((TOTAL / 60))m $((TOTAL % 60))s"
+
+# The one thing that will stop a fresh install from trading — say it last, where
+# it won't scroll away.
+if [ "$NEEDS_KEYS" = true ]; then
+    echo ""
+    echo -e "  ${YELLOW}${BOLD}Next step${NC}   add your Alpaca keys, then restart:"
+    echo -e "    ${BOLD}nano .env${NC}"
+    echo -e "    ${BOLD}sudo systemctl restart claude-trading${NC}"
+fi
+
 echo ""
-echo "  Useful commands:"
+echo -e "  ${DIM}Useful commands${NC}"
 echo "    sudo systemctl status claude-trading   → service status"
 echo "    journalctl -u claude-trading -f        → live logs"
 echo "    sudo systemctl stop claude-trading     → stop the service"
