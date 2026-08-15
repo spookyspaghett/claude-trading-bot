@@ -203,6 +203,30 @@ class VwapConfig(BaseModel):
         return v
 
 
+# Which asset classes each strategy can actually trade.
+#
+# ORB is built around a session: it accumulates an opening range from 09:30 ET
+# and flattens at eod_exit_time. Pointed at a 24/7 crypto feed it does not fail
+# — it silently trades only during US stock market hours and closes out every
+# afternoon, which looks exactly like a broken bot rather than a misconfigured
+# one. Everything else is session-agnostic or takes a trade_24_7 flag.
+#
+# This is the single source of truth: config validation, the live strategy
+# dispatch and both UI pickers all derive from it.
+STRATEGY_ASSETS: dict[str, frozenset[str]] = {
+    "orb":         frozenset({"stock"}),
+    "ema":         frozenset({"stock", "crypto"}),
+    "donchian":    frozenset({"stock", "crypto"}),
+    "trend_sr":    frozenset({"stock", "crypto"}),
+    "vwap_revert": frozenset({"stock", "crypto"}),
+}
+
+
+def strategies_for(asset_class: str) -> list[str]:
+    """Strategy names that can trade the given asset class."""
+    return [n for n, assets in STRATEGY_ASSETS.items() if asset_class in assets]
+
+
 class StrategyConfig(BaseModel):
     name: Literal["orb", "ema", "donchian", "trend_sr", "vwap_revert"] = "orb"
     orb: OrbConfig = OrbConfig(opening_range_minutes=15)
@@ -248,6 +272,27 @@ class Config(BaseModel):
         data["alpaca_api_key"] = api_key
         data["alpaca_secret_key"] = secret_key
         return data
+
+    @model_validator(mode="after")
+    def check_strategy_supports_asset_class(self) -> Config:
+        """Refuse a strategy that can't trade this asset class.
+
+        Enforced here rather than in the UI because the UI is only one of the
+        ways a profile gets written: hand-edited YAML, an older dashboard build
+        and direct API calls all land in the same place. A crypto bot running
+        ORB doesn't error — it just quietly stops trading outside US market
+        hours, so this has to fail loudly at load time instead.
+        """
+        allowed = STRATEGY_ASSETS.get(self.strategy.name, frozenset())
+        if self.asset_class not in allowed:
+            usable = ", ".join(sorted(strategies_for(self.asset_class))) or "none"
+            only = " / ".join(sorted(allowed)) or "no asset class"
+            raise ValueError(
+                f"strategy {self.strategy.name!r} supports {only}, "
+                f"not {self.asset_class!r}. Strategies available for "
+                f"{self.asset_class}: {usable}."
+            )
+        return self
 
 
 def load_config(path: Path = Path("config.yaml")) -> Config:

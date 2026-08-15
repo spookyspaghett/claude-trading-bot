@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Save, RotateCcw, HelpCircle } from 'lucide-react'
 import { apiPost, apiPut } from '../hooks/useApi'
-import type { Config } from '../types'
+import { STRATEGY_LABELS, strategiesFor, strategySupports } from '../types'
+import type { AssetClass, Config } from '../types'
 
 interface Props {
   onRestart: () => void
@@ -241,6 +242,9 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
   }
 
   const isCrypto = cfg.asset_class === 'crypto'
+  // A profile can hold a strategy its asset class can't run. Say so instead of
+  // rendering a tab strip with nothing selected and no settings panel below it.
+  const strategyMismatch = !strategySupports(cfg.strategy.name, cfg.asset_class as AssetClass)
 
   async function handleSave(andRestart: boolean) {
     setSaving(true); setMsg(null)
@@ -443,15 +447,12 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
           <div className="space-y-6">
           {/* ── Strategy selector ─────────────────────────────────────────── */}
           <Section title="Strategy">
-            {/* Tabs — ORB is stock-only (built around the market open) */}
+            {/* Derived from STRATEGY_ASSETS, so this can't offer a pairing the
+                server would refuse. ORB is stock-only: it is built around the
+                09:30 ET opening range. */}
             <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 w-fit">
-              {[
-                ...(isCrypto ? [] : [{ id: 'orb', label: 'ORB' }]),
-                { id: 'ema',      label: 'EMA' },
-                { id: 'donchian', label: 'Donchian' },
-                { id: 'trend_sr', label: 'Trend/SR' },
-                { id: 'vwap_revert', label: 'VWAP' },
-              ].map(({ id, label }) => (
+              {strategiesFor(cfg.asset_class as AssetClass)
+                .map(id => ({ id, label: STRATEGY_LABELS[id] })).map(({ id, label }) => (
                 <button key={id}
                   onClick={() => setStrategyName(id)}
                   className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
@@ -462,6 +463,13 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
                 </button>
               ))}
             </div>
+
+            {strategyMismatch && (
+              <p className="text-[11px] text-amber-400 mt-2">
+                Saved strategy <b>{STRATEGY_LABELS[cfg.strategy.name] ?? cfg.strategy.name}</b> can’t
+                trade {cfg.asset_class}. Pick one above — the bot refuses to start until you do.
+              </p>
+            )}
 
             {/* ── ORB settings ──────────────────────────────────────────── */}
             {mode === 'orb' && (

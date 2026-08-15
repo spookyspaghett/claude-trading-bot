@@ -133,7 +133,16 @@ def _build_strategy(config: object) -> tuple[Strategy, str]:
             fast=config.strategy.ema.fast_period,
             slow=config.strategy.ema.slow_period,
         )
-    else:
+    elif name == "orb":
+        # ORB has no trade_24_7 mode: it is defined by the 09:30 ET opening
+        # range and the close. Config validation rejects orb + crypto, so
+        # reaching here with a crypto profile means that check was bypassed.
+        if is_crypto:
+            raise ValueError(
+                "ORB cannot trade crypto — it is built around the 09:30 ET "
+                "opening range and would sit idle outside US market hours. "
+                "Pick trend_sr, ema, donchian or vwap_revert."
+            )
         strat = ORBStrategy(
             config=config.strategy.orb,
             symbols=config.symbols,
@@ -145,6 +154,12 @@ def _build_strategy(config: object) -> tuple[Strategy, str]:
             strategy="orb",
             opening_range_minutes=config.strategy.orb.opening_range_minutes,
         )
+    else:
+        # Previously an `else` that built ORB for anything unrecognised. A
+        # crypto bot that fell through here would trade only during US market
+        # hours and flatten every afternoon, with nothing in the logs saying
+        # the configured strategy had been swapped out from under it.
+        raise ValueError(f"Unknown strategy {name!r}")
     return strat, order_type
 
 

@@ -79,6 +79,36 @@ export interface PnLPoint {
   profit_loss: number
 }
 
+/** Which asset classes each strategy can trade.
+ *
+ *  Mirrors STRATEGY_ASSETS in config_loader.py, which is the authority — the
+ *  server rejects a mismatched pair whatever the UI offers. This copy exists so
+ *  the pickers never present a choice that would be refused on save. */
+export const STRATEGY_ASSETS: Record<string, AssetClass[]> = {
+  // ORB is built around the 09:30 ET opening range, so it is stock-only.
+  orb:         ['stock'],
+  ema:         ['stock', 'crypto'],
+  donchian:    ['stock', 'crypto'],
+  trend_sr:    ['stock', 'crypto'],
+  vwap_revert: ['stock', 'crypto'],
+}
+
+export const STRATEGY_LABELS: Record<string, string> = {
+  orb:         'ORB',
+  ema:         'EMA',
+  donchian:    'Donchian',
+  trend_sr:    'Trend/SR',
+  vwap_revert: 'VWAP',
+}
+
+export function strategiesFor(asset: AssetClass): string[] {
+  return Object.keys(STRATEGY_ASSETS).filter(n => STRATEGY_ASSETS[n].includes(asset))
+}
+
+export function strategySupports(name: string, asset: AssetClass): boolean {
+  return (STRATEGY_ASSETS[name] ?? []).includes(asset)
+}
+
 export interface ConfigRisk {
   max_position_usd: number
   stop_loss_pct: number

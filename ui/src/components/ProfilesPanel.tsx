@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from 'react'
-import { Plus, Check, Trash2, Pencil, Power, X, Coins, LineChart, KeyRound } from 'lucide-react'
+import { Plus, Check, Trash2, Pencil, Power, X, Coins, LineChart, KeyRound, Wallet } from 'lucide-react'
 import { apiPost, apiPut } from '../hooks/useApi'
-import { Wallet } from 'lucide-react'
+import { STRATEGY_LABELS, strategiesFor, strategySupports } from '../types'
 import type { AssetClass, ProfileSummary } from '../types'
 
 interface Props {
@@ -9,20 +9,17 @@ interface Props {
   onActivated: () => void
 }
 
+// Derived from STRATEGY_ASSETS so this list can't drift from what the server
+// will accept. Crypto leads with Trend/SR because it's the one tuned for a 24/7
+// feed; ORB is absent for crypto because it needs a market open.
 const STRATEGIES_BY_ASSET: Record<AssetClass, { id: string; label: string }[]> = {
-  stock: [
-    { id: 'orb', label: 'ORB' },
-    { id: 'ema', label: 'EMA' },
-    { id: 'donchian', label: 'Donchian' },
-    { id: 'trend_sr', label: 'Trend/SR' },
-    { id: 'vwap_revert', label: 'VWAP Reversion' },
-  ],
-  crypto: [
-    { id: 'trend_sr', label: 'Trend/SR (recommended)' },
-    { id: 'ema', label: 'EMA' },
-    { id: 'donchian', label: 'Donchian' },
-    { id: 'vwap_revert', label: 'VWAP Reversion' },
-  ],
+  stock: strategiesFor('stock').map(id => ({ id, label: STRATEGY_LABELS[id] })),
+  crypto: strategiesFor('crypto')
+    .sort((a, b) => (a === 'trend_sr' ? -1 : b === 'trend_sr' ? 1 : 0))
+    .map(id => ({
+      id,
+      label: id === 'trend_sr' ? 'Trend/SR (recommended)' : STRATEGY_LABELS[id],
+    })),
 }
 
 const SYMBOL_SUGGESTIONS: Record<AssetClass, string> = {
@@ -114,15 +111,27 @@ export default function ProfilesPanel({ runningSlugs, onActivated }: Props) {
       const p = await res.json() as Record<string, unknown>
       const risk = (p.risk ?? {}) as Record<string, number>
       const strat = (p.strategy ?? {}) as Record<string, string>
+      const asset = (p.asset_class as AssetClass) ?? 'stock'
+      // A stored profile can name a strategy this asset class can't run —
+      // hand-edited YAML, or one saved before the pairing was enforced. Show a
+      // usable strategy rather than a selection the server would reject.
+      const saved = strat.name ?? 'trend_sr'
+      const usable = strategySupports(saved, asset) ? saved : STRATEGIES_BY_ASSET[asset][0].id
+      if (usable !== saved) {
+        setMsg({
+          text: `${STRATEGY_LABELS[saved] ?? saved} can't trade ${asset} — switched to ${STRATEGY_LABELS[usable]}. Save to keep it.`,
+          ok: false,
+        })
+      }
       setForm({
         slug,
         name: String(p.name ?? ''),
-        asset_class: (p.asset_class as AssetClass) ?? 'stock',
+        asset_class: asset,
         live: Boolean(p.live),
         alpaca_api_key: String(p.alpaca_api_key ?? ''),
         alpaca_secret_key: String(p.alpaca_secret_key ?? ''),
         symbolsText: ((p.symbols as string[]) ?? []).join(', '),
-        strategyName: strat.name ?? 'trend_sr',
+        strategyName: usable,
         max_position_usd: risk.max_position_usd ?? 200,
         stop_loss_pct: risk.stop_loss_pct ?? 3.0,
         daily_loss_limit_usd: risk.daily_loss_limit_usd ?? 50,
