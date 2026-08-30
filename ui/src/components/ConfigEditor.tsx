@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Save, RotateCcw, HelpCircle } from 'lucide-react'
 import { apiPost, apiPut } from '../hooks/useApi'
 import { STRATEGY_LABELS, strategiesFor, strategySupports } from '../types'
+import SettingsCsv from './SettingsCsv'
 import type { AssetClass, Config } from '../types'
 
 interface Props {
@@ -198,6 +199,9 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
   const [groupsText, setGroupsText] = useState('')
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  // Bumped by a CSV import so the editor re-reads what was just written to
+  // disk, rather than continuing to show the pre-import values.
+  const [reload, setReload] = useState(0)
 
   const q = `?profile=${encodeURIComponent(slug)}`
 
@@ -211,7 +215,7 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
         setGroupsText(groupsToText(risk.correlation_groups ?? {}))
       })
       .catch(() => setSymbolsText(DEFAULT.symbols.join(', ')))
-  }, [q])
+  }, [q, reload])
 
   function setRisk(key: keyof Config['risk'], val: number) {
     setCfg(prev => ({ ...prev, risk: { ...prev.risk, [key]: val } }))
@@ -278,6 +282,12 @@ export default function ConfigEditor({ onRestart, slug }: Props) {
         }`}>
           {isCrypto ? 'CRYPTO · 24/7' : 'STOCK'}
         </span>
+      </div>
+
+      {/* Its own full-width strip: the import diff lists every setting that
+          would move, which has nowhere to go inside the header row. */}
+      <div className="px-4 py-2.5 border-b border-slate-700/60">
+        <SettingsCsv slug={slug} onImported={() => setReload(n => n + 1)} />
       </div>
 
       <div className="p-4 space-y-6">

@@ -20,6 +20,10 @@ requires an explicit typed confirmation.
   fractional sizing, `BTC/USD` symbol format).
 - **Profiles** — each profile is a self-contained bundle (name, its own Alpaca
   keys, asset class, symbols, strategy, risk). Stored locally and gitignored.
+- **Settings import/export** — back a profile's settings up to CSV and load them
+  back on another machine, from the dashboard or the CLI. Imports merge, show a
+  diff before writing, and cannot set live mode or API keys.
+  See [docs/settings_csv.md](docs/settings_csv.md).
 - **Multiple accounts at once** — run one bot per profile concurrently, each with
   its own dashboard tab, log stream, and kill switch.
 - **Web dashboard** (FastAPI + React) — per-profile account balance, positions,

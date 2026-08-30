@@ -12,6 +12,7 @@ from api.routers.backtest_router import router as backtest_router
 from api.routers.bars_router import router as bars_router
 from api.routers.donchian_router import router as donchian_router
 from api.routers.profiles_router import router as profiles_router
+from api.routers.settings_csv_router import router as settings_csv_router
 from api.routers.ws import router as ws_router
 
 app = FastAPI(title="Claude Trading Dashboard", version="1.0.0")
@@ -38,6 +39,7 @@ app.include_router(logs.router, prefix="/api")
 app.include_router(bot.router, prefix="/api")
 app.include_router(config_router.router, prefix="/api")
 app.include_router(profiles_router, prefix="/api")
+app.include_router(settings_csv_router, prefix="/api")
 app.include_router(kill.router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")

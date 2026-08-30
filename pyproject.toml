@@ -12,6 +12,7 @@ py-modules = [
     "broker", "data", "strategy", "executor", "main",
     "backtest", "alerts",
     "journal", "research", "claude_advisor",
+    "profiles", "settings_csv",
 ]
 
 [project]
