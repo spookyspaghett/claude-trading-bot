@@ -34,6 +34,14 @@ DEFAULTS: dict[str, Any] = {
     "starting_equity": 500000.0,
     "max_position_usd": 0.0,
     "stop_loss_pct": 0.0,
+    # Sizing and the daily halt. Both change results, and both used to be read
+    # from the root config.yaml no matter which profile you loaded — so the
+    # single most result-defining setting in the risk model was silently not the
+    # one you were testing. -1 means "leave config.yaml's value alone", because
+    # 0 is meaningful for these (flat notional sizing, limit off).
+    "risk_per_trade_pct": -1.0,
+    "daily_loss_limit_usd": 0.0,
+    "daily_loss_limit_pct": -1.0,
     "slippage_bps": 0.0,
     "commission": 0.0,
     "long_only": False,
@@ -102,6 +110,23 @@ def _f(value: Any) -> float:
     return float(value) if isinstance(value, Decimal) else float(value)
 
 
+def implied_equity(daily_usd: float, daily_pct: float) -> float | None:
+    """The account size a profile's dollar limits were written for.
+
+    A settings file carries absolute amounts — max_position_usd,
+    daily_loss_limit_usd — that mean nothing without the equity they were sized
+    against, and equity is the broker's, not a config field. But the two daily
+    limits pin it exactly: they describe the same limit in dollars and in
+    percent, so their ratio is the equity the author had in mind.
+
+    Returns None when the profile only sets one of them, in which case there is
+    nothing to infer and the form's own value should stand.
+    """
+    if daily_usd <= 0 or daily_pct <= 0:
+        return None
+    return daily_usd / (daily_pct / 100.0)
+
+
 def params_from_config(cfg: Config) -> dict[str, Any]:
     """Map a live profile's Config onto backtest form values.
 
@@ -116,6 +141,18 @@ def params_from_config(cfg: Config) -> dict[str, Any]:
         out["symbol"] = cfg.symbols[0]
     out["max_position_usd"] = _f(cfg.risk.max_position_usd)
     out["stop_loss_pct"] = _f(cfg.risk.stop_loss_pct)
+    out["risk_per_trade_pct"] = _f(cfg.risk.risk_per_trade_pct)
+    out["daily_loss_limit_usd"] = _f(cfg.risk.daily_loss_limit_usd)
+    out["daily_loss_limit_pct"] = _f(cfg.risk.daily_loss_limit_pct)
+
+    # Recover the equity those dollar limits were written against. Without it a
+    # $150 position cap loaded onto the form's default $500,000 book caps every
+    # trade at 0.03% of equity and the backtest reports roughly nothing.
+    equity = implied_equity(
+        out["daily_loss_limit_usd"], out["daily_loss_limit_pct"]
+    )
+    if equity is not None:
+        out["starting_equity"] = round(equity, 2)
 
     # orb rides along with donchian: both map to the "auto" selector, and auto
     # dispatches to Donchian on daily bars. Seeding the channel from the profile

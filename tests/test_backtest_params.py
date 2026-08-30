@@ -15,6 +15,7 @@ import pytest
 from backtest_params import (
     DEFAULTS,
     free_parameters,
+    implied_equity,
     params_from_config,
     params_from_csv,
     sample_verdict,
@@ -200,3 +201,63 @@ def test_zero_parameters_does_not_divide_by_zero() -> None:
     v = sample_verdict(40, 0)
     assert v["ratio"] == 40.0
     assert v["level"] in ("ok", "warn", "bad")
+
+
+# ── The equity a settings file implies ────────────────────────────────────────
+# max_position_usd and daily_loss_limit_usd are absolute dollars, and the file
+# carries no equity to read them against. The two daily limits pin it exactly.
+
+def test_equity_is_recovered_from_the_two_daily_limits() -> None:
+    assert implied_equity(2000, 2.0) == 100_000
+    assert implied_equity(20_000, 4.0) == 500_000
+    assert implied_equity(20, 4.0) == 500
+
+
+@pytest.mark.parametrize(("usd", "pct"), [(0, 2.0), (2000, 0), (0, 0), (-1, 2.0)])
+def test_equity_is_not_guessed_when_only_one_limit_is_set(
+    usd: float, pct: float
+) -> None:
+    """With nothing to divide, the form's own value must stand."""
+    assert implied_equity(usd, pct) is None
+
+
+def test_starting_equity_comes_across_with_the_dollar_limits() -> None:
+    """The bug this prevents: a $150 position cap loaded onto the form's default
+    $500,000 book caps every trade at 0.03% of equity, so the run reports
+    roughly nothing and reads as a bad strategy rather than a mis-scaled test."""
+    p = params_from_config(_cfg(_profile("trend_sr", risk={
+        "max_position_usd": 150, "stop_loss_pct": 2.0,
+        "daily_loss_limit_usd": 20, "daily_loss_limit_pct": 4.0,
+        "max_open_positions": 3, "risk_per_trade_pct": 1.0,
+    })))
+    assert p["starting_equity"] == 500
+    assert p["max_position_usd"] == 150.0
+
+
+def test_starting_equity_is_left_alone_when_it_cannot_be_derived() -> None:
+    p = params_from_config(_cfg(_profile("donchian", risk={
+        "max_position_usd": 25000, "stop_loss_pct": 2.0,
+        "daily_loss_limit_usd": 4000, "max_open_positions": 8,
+    })))
+    assert p["starting_equity"] == DEFAULTS["starting_equity"]
+
+
+def test_the_sizing_model_reaches_the_backtest() -> None:
+    """risk_per_trade_pct decides every position size, and used to be read from
+    the root config.yaml whatever profile the form was loaded from."""
+    p = params_from_config(_cfg(_profile("donchian", risk={
+        "max_position_usd": 60000, "stop_loss_pct": 2.0,
+        "daily_loss_limit_usd": 20000, "daily_loss_limit_pct": 4.0,
+        "max_open_positions": 8, "risk_per_trade_pct": 0.5,
+    })))
+    assert p["risk_per_trade_pct"] == 0.5
+    assert p["daily_loss_limit_usd"] == 20000.0
+    assert p["daily_loss_limit_pct"] == 4.0
+    assert p["starting_equity"] == 500_000
+
+
+def test_sizing_is_not_counted_as_a_fitted_parameter() -> None:
+    """Position size changes returns, not entries and exits. Counting it would
+    inflate the overfitting ratio with a knob that fits nothing."""
+    p = dict(DEFAULTS, strategy="trend_sr", risk_per_trade_pct=0.5)
+    assert "risk_per_trade_pct" not in free_parameters(p)

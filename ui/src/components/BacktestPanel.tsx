@@ -158,6 +158,10 @@ export default function BacktestPanel() {
   // 0 = fall back to config.yaml's risk block (which the UI can't otherwise edit).
   const [maxPositionUsd, setMaxPositionUsd] = useState(0)
   const [stopLossPct, setStopLossPct] = useState(0)
+  // -1 = leave config.yaml's value alone; 0 is meaningful for these.
+  const [riskPerTradePct, setRiskPerTradePct] = useState(-1)
+  const [dailyLossUsd, setDailyLossUsd] = useState(0)
+  const [dailyLossPct, setDailyLossPct] = useState(-1)
   const [strategy, setStrategy] = useState<'auto' | 'trend_sr' | 'ema' | 'vwap_revert'>('auto')
   const [slippageBps, setSlippageBps] = useState(0)
   const [commission, setCommission] = useState(0)
@@ -229,6 +233,9 @@ export default function BacktestPanel() {
       form.append('exit_lookback', String(exitLookback))
       form.append('max_position_usd', String(maxPositionUsd))
       form.append('stop_loss_pct', String(stopLossPct))
+      form.append('risk_per_trade_pct', String(riskPerTradePct))
+      form.append('daily_loss_limit_usd', String(dailyLossUsd))
+      form.append('daily_loss_limit_pct', String(dailyLossPct))
       const res = await fetch('/api/backtest/upload', { method: 'POST', body: form })
       if (!res.ok) {
         const data = await res.json() as { detail?: string }
@@ -266,6 +273,9 @@ export default function BacktestPanel() {
     if (p.starting_equity !== undefined) setStartingEquity(num('starting_equity', startingEquity))
     setMaxPositionUsd(num('max_position_usd', 0))
     setStopLossPct(num('stop_loss_pct', 0))
+    setRiskPerTradePct(num('risk_per_trade_pct', -1))
+    setDailyLossUsd(num('daily_loss_limit_usd', 0))
+    setDailyLossPct(num('daily_loss_limit_pct', -1))
     setSlippageBps(num('slippage_bps', slippageBps))
     setCommission(num('commission', commission))
     setLongOnly(bool('long_only', longOnly))
@@ -312,6 +322,23 @@ export default function BacktestPanel() {
     a.click()
     URL.revokeObjectURL(url)
   }
+
+  /** A position cap and a starting equity that describe different accounts.
+   *
+   *  These are absolute dollars, so they only mean anything against an equity
+   *  the settings file cannot state. Load a $500 crypto profile onto the form's
+   *  default $500,000 and every position is capped at 0.03% of the book: the
+   *  run completes, reports roughly nothing, and looks like a bad strategy
+   *  rather than a mis-scaled test. */
+  const capShare = maxPositionUsd > 0 && startingEquity > 0
+    ? maxPositionUsd / startingEquity : null
+  const scaleWarning =
+    capShare === null ? null
+    : capShare > 1
+      ? `Position size ${fmtUsd(maxPositionUsd)} is larger than the whole ${fmtUsd(startingEquity)} account — the cap can never bind.`
+    : capShare < 0.005
+      ? `Position size ${fmtUsd(maxPositionUsd)} is ${(capShare * 100).toFixed(2)}% of the ${fmtUsd(startingEquity)} starting equity. These were almost certainly sized for different accounts; the result will look flat whatever the strategy does.`
+      : null
 
   // ── Derived chart data ─────────────────────────────────────────────────────
 
@@ -380,8 +407,14 @@ export default function BacktestPanel() {
         <BacktestSettingsLoader onLoad={applyParams} />
         {paramSource && (
           <p className="text-[11px] text-slate-500 -mt-1">
-            Form loaded from <b className="text-slate-400">{paramSource}</b>. Edits
-            below only affect this run — they are not written back to the profile.
+            Form loaded from <b className="text-slate-400">{paramSource}</b>, including
+            its sizing and starting equity. Edits below only affect this run — they
+            are not written back to the profile.
+          </p>
+        )}
+        {scaleWarning && (
+          <p role="alert" className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-800/50 rounded-lg px-2.5 py-2">
+            {scaleWarning}
           </p>
         )}
 
@@ -572,6 +605,28 @@ export default function BacktestPanel() {
                   value={startingEquity}
                   onChange={e => setStartingEquity(parseEquity(e.target.value))}
                 />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">
+                  Risk / trade % <span className="text-slate-600">(-1 = config)</span>
+                </label>
+                <input type="number" min={-1} max={100} step={0.05}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
+                  value={riskPerTradePct}
+                  onChange={e => setRiskPerTradePct(Math.max(-1, parseFloat(e.target.value)))}
+                />
+                <p className="text-[10px] text-slate-600 mt-0.5">decides every position size</p>
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1">
+                  Daily loss $ <span className="text-slate-600">(0 = config)</span>
+                </label>
+                <input type="number" min={0} step="any"
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-100 w-32 focus:outline-none focus:border-blue-500"
+                  value={dailyLossUsd}
+                  onChange={e => setDailyLossUsd(Math.max(0, parseFloat(e.target.value) || 0))}
+                />
+                <p className="text-[10px] text-slate-600 mt-0.5">halts the run for the day</p>
               </div>
               <div>
                 <label className="text-xs text-slate-500 block mb-1">Position size ($)</label>

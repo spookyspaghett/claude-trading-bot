@@ -199,6 +199,14 @@ async def run_backtest_upload(
     # 0 means "leave the config.yaml value alone".
     max_position_usd: float = Form(0.0),
     stop_loss_pct: float = Form(0.0),
+    # The rest of the sizing model. These reached the backtest only from the
+    # root config.yaml, whatever profile the form had been loaded from — so
+    # risk_per_trade_pct, which decides every position size, was never the one
+    # under test. -1 keeps config.yaml's value, because 0 is meaningful here
+    # (flat notional sizing / limit disabled).
+    risk_per_trade_pct: float = Form(-1.0),
+    daily_loss_limit_usd: float = Form(0.0),
+    daily_loss_limit_pct: float = Form(-1.0),
 ) -> dict[str, Any]:
     """Run a backtest from an uploaded CSV or Excel file.
 
@@ -232,6 +240,12 @@ async def run_backtest_upload(
             risk_overrides["max_position_usd"] = Decimal(str(max_position_usd))
         if stop_loss_pct > 0:
             risk_overrides["stop_loss_pct"] = Decimal(str(stop_loss_pct))
+        if risk_per_trade_pct >= 0:
+            risk_overrides["risk_per_trade_pct"] = Decimal(str(risk_per_trade_pct))
+        if daily_loss_limit_usd > 0:
+            risk_overrides["daily_loss_limit_usd"] = Decimal(str(daily_loss_limit_usd))
+        if daily_loss_limit_pct >= 0:
+            risk_overrides["daily_loss_limit_pct"] = Decimal(str(daily_loss_limit_pct))
         risk_config = (
             cfg.risk.model_copy(update=risk_overrides) if risk_overrides else cfg.risk
         )
@@ -275,6 +289,9 @@ async def run_backtest_upload(
             "file": filename,
             "starting_equity": starting_equity,
             "max_position_usd": max_position_usd, "stop_loss_pct": stop_loss_pct,
+            "risk_per_trade_pct": risk_per_trade_pct,
+            "daily_loss_limit_usd": daily_loss_limit_usd,
+            "daily_loss_limit_pct": daily_loss_limit_pct,
             "slippage_bps": slippage_bps, "commission": commission,
             "long_only": long_only,
             "lookback_days": lookback_days, "exit_lookback": exit_lookback,
