@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,13 +19,34 @@ router = APIRouter()
 
 # ── Report persistence ────────────────────────────────────────────────────────
 
-def _save_report(payload: dict[str, Any]) -> Path:
+def _save_report(payload: dict[str, Any], params: dict[str, Any] | None = None) -> Path:
+    """Persist a run, together with the settings that produced it.
+
+    The parameters used to be dropped on the floor, which made the saved
+    reports close to useless: you could see that one run beat another and had
+    no way to recover what was different between them. Recording them is what
+    turns this directory into a run history you can actually compare.
+    """
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    ts  = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+    now = datetime.now(tz=UTC)
+    ts  = now.strftime("%Y%m%d_%H%M%S")
     sym = payload.get("symbol", "UNKNOWN")
     path = REPORTS_DIR / f"{ts}_{sym}.json"
+    payload = {**payload, "created_at": now.isoformat(), "params": params or {}}
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return path
+
+
+def _attach_sample(payload: dict[str, Any], params: dict[str, Any]) -> None:
+    """Record which knobs were in play and whether the trade count supports the
+    statistics. Computed here rather than in the UI so the thresholds have one
+    definition shared by a fresh run and the saved history."""
+    from backtest_params import free_parameters, sample_verdict
+    free = free_parameters(params)
+    trades = int((payload.get("stats") or {}).get("total_trades") or 0)
+    payload["params"] = params
+    payload["free_parameters"] = free
+    payload["sample"] = sample_verdict(trades, len(free))
 
 
 # ── Shared response serialiser ────────────────────────────────────────────────
@@ -120,7 +141,19 @@ async def run_backtest_endpoint(req: BacktestRequest) -> dict[str, Any]:
         )
 
         payload = _result_to_dict(result)
-        report_path = _save_report(payload)
+        # The Alpaca path runs the profile's own ORB config rather than form
+        # values, so the recorded params name that rather than inventing knobs
+        # this endpoint never accepted.
+        params = {
+            "strategy": "auto",
+            "symbol": req.symbol,
+            "starting_equity": req.starting_equity,
+            "source": "alpaca",
+            "stop_loss_pct": float(cfg.risk.stop_loss_pct),
+            "max_position_usd": float(cfg.risk.max_position_usd),
+        }
+        _attach_sample(payload, params)
+        report_path = _save_report(payload, params)
         payload["report_file"] = report_path.name
         return payload
 
@@ -237,7 +270,27 @@ async def run_backtest_upload(
         )
 
         payload = _result_to_dict(result)
-        report_path = _save_report(payload)
+        params = {
+            "strategy": strategy, "symbol": sym, "source": "upload",
+            "file": filename,
+            "starting_equity": starting_equity,
+            "max_position_usd": max_position_usd, "stop_loss_pct": stop_loss_pct,
+            "slippage_bps": slippage_bps, "commission": commission,
+            "long_only": long_only,
+            "lookback_days": lookback_days, "exit_lookback": exit_lookback,
+            "trend_ma": trend_ma, "fast_ma": fast_ma,
+            "volume_filter_days": volume_filter_days,
+            "use_atr_stop": use_atr_stop, "atr_period": atr_period,
+            "atr_multiplier": atr_multiplier,
+            "trailing_activation_pct": trailing_activation_pct,
+            "trailing_pct": trailing_pct,
+            "ma_fast": ma_fast, "ma_slow": ma_slow,
+            "pivot_lookback": pivot_lookback, "pivot_strength": pivot_strength,
+            "min_adx": min_adx, "adx_period": adx_period,
+            "volume_mult": volume_mult, "volume_ma": volume_ma,
+        }
+        _attach_sample(payload, params)
+        report_path = _save_report(payload, params)
         payload["report_file"] = report_path.name
         return payload
 

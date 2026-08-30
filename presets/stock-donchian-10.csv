@@ -1,0 +1,55 @@
+# Donchian channel breakout, 10 symbols. Paper stocks.
+# Sized for this profile's $500,000 account. Import merges: anything not listed
+# is left alone.
+# When backtesting this profile, set Starting equity to 500000.
+key,value
+
+# -- What it trades --
+# A multi-asset ETF basket rather than 10 correlated stocks. Diversification IS
+# the edge in a channel-breakout system; ten megacaps is one bet wearing ten hats.
+asset_class,stock
+symbols,"SPY,QQQ,IWM,XBI,EFA,EEM,GLD,SLV,TLT,XLE"
+
+# -- Strategy --
+# Turtle-style 40-in / 20-out. The 20-day exit channel is the primary exit; the
+# trail is deliberately loose so it doesn't cut a trend short.
+strategy.name,donchian
+strategy.donchian.lookback_days,40
+strategy.donchian.exit_lookback,20
+strategy.donchian.trend_ma,200
+strategy.donchian.trailing_activation_pct,15.0
+strategy.donchian.trailing_pct,12.0
+strategy.donchian.long_only,true
+
+# -- Risk --
+# The stop is hardcoded at ATR(14) x 1.5 in donchian_strategy.py (~3-6% typical)
+# and is not configurable from here. At 0.5% of $500,000 that is $2,500 of risk
+# per trade, which a ~4.5% stop turns into roughly $55,000 of notional - so
+# max_position_usd is set just above that. Any lower and the notional cap, not
+# the risk budget, would be sizing every position.
+risk.risk_per_trade_pct,0.5
+risk.max_position_usd,60000
+risk.stop_loss_pct,2.0
+risk.max_open_positions,8
+risk.max_portfolio_heat_pct,4.0
+risk.max_group_heat_pct,2.0
+risk.correlation_groups.us_equity_beta,"SPY,QQQ,IWM,XBI"
+risk.correlation_groups.intl_equity,"EFA,EEM"
+risk.correlation_groups.precious_metals,"GLD,SLV"
+risk.max_gross_exposure_pct,100
+
+# The two daily limits combine by taking the TIGHTER one, so the USD figure has
+# to match 4% of $500,000 or it silently becomes the real limit. At $4,000 it
+# would have halted this book after a single bad morning.
+# Loosened deliberately besides: this holds overnight, and a tight daily limit
+# FLATTENS THE WHOLE BOOK on one gap down - the wrong reaction for a trend
+# system. A 20% halt would likewise stop it right before the recovery leg.
+risk.daily_loss_limit_usd,20000
+risk.daily_loss_limit_pct,4.0
+risk.derisk_start_dd_pct,10.0
+risk.halt_dd_pct,25.0
+risk.min_risk_scale,0.40
+
+# NOT SET, deliberately: risk.trailing_stop_pct and risk.loser_cut_pct do
+# nothing on this profile. donchian_runner.py never builds an Executor, and both
+# live there. The 20-day channel and trailing_pct above are the only exits.

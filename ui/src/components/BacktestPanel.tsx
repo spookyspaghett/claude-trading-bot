@@ -1,5 +1,11 @@
 import { useRef, useState } from 'react'
 import { Play, Upload, ExternalLink, TrendingDown, Download, ChevronDown, ChevronUp } from 'lucide-react'
+import BacktestSettingsLoader from './BacktestSettingsLoader'
+import type { BacktestParams } from './BacktestSettingsLoader'
+import BacktestRunHistory from './BacktestRunHistory'
+import BacktestQuality from './BacktestQuality'
+import type { SampleVerdict } from './BacktestQuality'
+import MonthlyReturns from './MonthlyReturns'
 import {
   ResponsiveContainer,
   AreaChart, Area,
@@ -58,6 +64,9 @@ interface BacktestResult {
   equity_curve: { timestamp: number; equity: number }[]
   trades: BacktestTrade[]
   report_file?: string
+  params?: BacktestParams
+  free_parameters?: string[]
+  sample?: SampleVerdict
 }
 
 type DataSource = 'alpaca' | 'upload'
@@ -165,6 +174,9 @@ export default function BacktestPanel() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
+  // Bumped after each run so the history list refetches.
+  const [runsKey, setRunsKey] = useState(0)
+  const [paramSource, setParamSource] = useState('')
 
   async function runAlpaca() {
     setLoading(true); setError(null); setResult(null)
@@ -179,6 +191,7 @@ export default function BacktestPanel() {
         throw new Error(data.detail ?? `HTTP ${res.status}`)
       }
       setResult(await res.json() as BacktestResult)
+      setRunsKey(k => k + 1)
     } catch (err) {
       setError(String(err))
     } finally {
@@ -222,11 +235,82 @@ export default function BacktestPanel() {
         throw new Error(data.detail ?? `HTTP ${res.status}`)
       }
       setResult(await res.json() as BacktestResult)
+      setRunsKey(k => k + 1)
     } catch (err) {
       setError(String(err))
     } finally {
       setLoading(false)
     }
+  }
+
+  /** Push a loaded settings bundle into the form.
+   *
+   *  Every field is written from the bundle rather than only the ones that
+   *  differ: a partial apply would leave the form as a mix of two strategies'
+   *  settings, which is exactly the state that makes a backtest untrustworthy.
+   *  backtest_params.DEFAULTS fills anything the source didn't specify. */
+  function applyParams(p: BacktestParams, source: string) {
+    const num = (k: string, fallback: number) => {
+      const v = Number(p[k])
+      return Number.isFinite(v) ? v : fallback
+    }
+    const bool = (k: string, fallback: boolean) =>
+      typeof p[k] === 'boolean' ? p[k] as boolean : fallback
+
+    const s = String(p.strategy ?? 'auto')
+    if (s === 'auto' || s === 'trend_sr' || s === 'ema' || s === 'vwap_revert') setStrategy(s)
+    if (typeof p.symbol === 'string' && p.symbol) {
+      setUploadSymbol(p.symbol)
+      if (SYMBOLS.includes(p.symbol)) setSymbol(p.symbol)
+    }
+    if (p.starting_equity !== undefined) setStartingEquity(num('starting_equity', startingEquity))
+    setMaxPositionUsd(num('max_position_usd', 0))
+    setStopLossPct(num('stop_loss_pct', 0))
+    setSlippageBps(num('slippage_bps', slippageBps))
+    setCommission(num('commission', commission))
+    setLongOnly(bool('long_only', longOnly))
+    setLookbackDays(num('lookback_days', lookbackDays))
+    setExitLookback(num('exit_lookback', exitLookback))
+    setTrendMa(num('trend_ma', trendMa))
+    setFastMa(num('fast_ma', fastMa))
+    setVolumeFilterDays(num('volume_filter_days', volumeFilterDays))
+    setUseAtrStop(bool('use_atr_stop', useAtrStop))
+    setAtrPeriod(num('atr_period', atrPeriod))
+    setAtrMultiplier(num('atr_multiplier', atrMultiplier))
+    setTrailingActivationPct(num('trailing_activation_pct', trailingActivationPct))
+    setTrailingPct(num('trailing_pct', trailingPct))
+    setMaFast(num('ma_fast', maFast))
+    setMaSlow(num('ma_slow', maSlow))
+    setPivotLookback(num('pivot_lookback', pivotLookback))
+    setPivotStrength(num('pivot_strength', pivotStrength))
+    setMinAdx(num('min_adx', minAdx))
+    setVolumeMult(num('volume_mult', volumeMult))
+    setParamSource(source)
+    setShowAdvanced(true)   // so the newly-written values are visible, not hidden
+  }
+
+  /** Trade log as CSV. The JSON report is for handing to Claude; this is for a
+   *  spreadsheet, which is where trade-by-trade review actually happens. */
+  function downloadTrades() {
+    if (!result) return
+    const head = ['#', 'symbol', 'direction', 'entry_time', 'entry_price',
+                  'exit_time', 'exit_price', 'qty', 'exit_reason', 'pnl']
+    const rows = result.trades.map((t, i) => [
+      i + 1, t.symbol, t.direction, t.entry_time, t.entry_price,
+      t.exit_time ?? '', t.exit_price ?? '', t.qty, t.exit_reason, t.pnl,
+    ])
+    const csv = [head, ...rows]
+      .map(r => r.map(c => {
+        const v = String(c)
+        return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v
+      }).join(','))
+      .join('\n')
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `trades_${result.symbol}_${result.start_date}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   // ── Derived chart data ─────────────────────────────────────────────────────
@@ -292,6 +376,14 @@ export default function BacktestPanel() {
             </button>
           </div>
         </div>
+
+        <BacktestSettingsLoader onLoad={applyParams} />
+        {paramSource && (
+          <p className="text-[11px] text-slate-500 -mt-1">
+            Form loaded from <b className="text-slate-400">{paramSource}</b>. Edits
+            below only affect this run — they are not written back to the profile.
+          </p>
+        )}
 
         {source === 'upload' && (
           <div className="space-y-3">
@@ -679,6 +771,8 @@ export default function BacktestPanel() {
         )}
       </div>
 
+      <BacktestRunHistory refreshKey={runsKey} onLoadParams={applyParams} />
+
       {loading && (
         <div className="card p-10 text-center text-slate-500 text-sm animate-pulse">
           Running strategy…
@@ -701,6 +795,7 @@ export default function BacktestPanel() {
                 {fmtPct(returnPct)} return on {fmtUsd(startingEquity)}
               </span>
             </div>
+            <div className="flex items-center gap-2">
             <button
               onClick={downloadReport}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-200 transition-colors"
@@ -709,6 +804,15 @@ export default function BacktestPanel() {
               <Download size={12} />
               Download for Claude
             </button>
+            <button
+              onClick={downloadTrades}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-200 transition-colors"
+              title="Trade log as CSV — for spreadsheet review"
+            >
+              <Download size={12} />
+              Trades CSV
+            </button>
+            </div>
           </div>
 
           {/* ── Stats grid ────────────────────────────────────────────────── */}
@@ -758,6 +862,16 @@ export default function BacktestPanel() {
               sub="avg days per trade"
             />
           </div>
+
+          {/* ── Can this sample support these numbers? ────────────────────── */}
+          {result.sample && (
+            <BacktestQuality
+              sample={result.sample}
+              freeParameters={result.free_parameters ?? []}
+              rTrades={result.stats.r_trades}
+              exposurePct={result.stats.exposure_pct}
+            />
+          )}
 
           {/* ── Risk analysis ─────────────────────────────────────────────────
               Dollar P&L says whether this run made money. These say whether it
@@ -883,6 +997,8 @@ export default function BacktestPanel() {
               </span>
             </div>
           </div>
+
+          <MonthlyReturns equityCurve={result.equity_curve} />
 
           {/* ── Per-trade P&L bar chart ────────────────────────────────────── */}
           {tradeBarData.length > 0 && (

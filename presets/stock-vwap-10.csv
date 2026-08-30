@@ -1,0 +1,47 @@
+# Stock VWAP mean reversion, 10 symbols. Paper.
+# Sized for this profile's $100,000 account. Import merges, so anything not
+# listed here is left alone.
+# When backtesting this profile, set Starting equity to 100000 - it is not a
+# profile field, so loading settings does not carry it across.
+key,value
+
+# -- What it trades --
+# Liquid, tight-spread, five sectors. Mean reversion is the wrong trade on thin
+# or gappy tickers, and on the highest-beta momentum names.
+asset_class,stock
+symbols,"SPY,QQQ,IWM,AAPL,MSFT,AMZN,GOOGL,JPM,XOM,UNH"
+
+# -- Strategy --
+strategy.name,vwap_revert
+strategy.vwap_revert.band_mult,2.25
+strategy.vwap_revert.stop_mult,3.5
+strategy.vwap_revert.dev_window,60
+strategy.vwap_revert.min_bars,45
+strategy.vwap_revert.max_trades_per_day,2
+strategy.vwap_revert.long_only,true
+strategy.vwap_revert.eod_exit_time,15:50
+
+# -- Risk --
+# max_position_usd is the load-bearing setting here. VWAP stops land ~0.3-0.6%
+# wide, so risk-based sizing alone would solve for ~$125k of notional on a
+# $100k account. The notional cap, not the risk budget, sizes this strategy.
+# Don't raise it without lowering risk_per_trade_pct to match.
+risk.risk_per_trade_pct,0.5
+risk.max_position_usd,15000
+risk.stop_loss_pct,1.0
+risk.max_open_positions,5
+risk.max_portfolio_heat_pct,3.0
+risk.max_group_heat_pct,1.5
+risk.correlation_groups.index_beta,"SPY,QQQ,IWM"
+risk.correlation_groups.megacap_tech,"AAPL,MSFT,AMZN,GOOGL"
+risk.max_gross_exposure_pct,100
+
+# The two daily limits combine by taking the TIGHTER one. 2% of $100,000 is
+# $2,000, so the two agree and the percent limit is the one doing the work.
+risk.daily_loss_limit_usd,2000
+risk.daily_loss_limit_pct,2.0
+risk.trailing_stop_pct,4.0
+risk.loser_cut_pct,3.0
+risk.derisk_start_dd_pct,8.0
+risk.halt_dd_pct,20.0
+risk.min_risk_scale,0.35

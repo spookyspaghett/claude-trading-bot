@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from api import bot_manager
 from api.routers import account, bot, config_router, kill, logs, positions
 from api.routers.backtest_router import router as backtest_router
+from api.routers.backtest_runs_router import router as backtest_runs_router
 from api.routers.bars_router import router as bars_router
 from api.routers.donchian_router import router as donchian_router
 from api.routers.profiles_router import router as profiles_router
@@ -43,6 +44,7 @@ app.include_router(settings_csv_router, prefix="/api")
 app.include_router(kill.router, prefix="/api")
 app.include_router(ws_router, prefix="/api")
 app.include_router(backtest_router, prefix="/api")
+app.include_router(backtest_runs_router, prefix="/api")
 app.include_router(bars_router, prefix="/api")
 app.include_router(donchian_router, prefix="/api")
 

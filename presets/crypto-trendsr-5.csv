@@ -1,0 +1,87 @@
+# Trend + Support/Resistance, 5 coins. Paper crypto, 24/7.
+# Sized for this profile's $500 account. Import merges: anything not listed is
+# left alone.
+# When backtesting this profile, set Starting equity to 500.
+#
+# $500 on crypto is a plumbing test, not a return-generating account. These
+# numbers are chosen so the mechanics are observable and the risk model behaves
+# the way it will at size - not to maximise anything.
+key,value
+
+# -- What it trades --
+# Alpaca requires the BASE/QUOTE form.
+asset_class,crypto
+symbols,"BTC/USD,ETH/USD,SOL/USD,LINK/USD,AVAX/USD"
+
+# -- Strategy --
+# 1h bars, not the 15m default: 15-minute crypto is mostly noise and churn.
+# regime_ma 200 is then ~8 days of trend context, ma_slow 55 ~2.3 days.
+strategy.name,trend_sr
+strategy.trend_sr.bar_minutes,60
+strategy.trend_sr.ma_fast,21
+strategy.trend_sr.ma_slow,55
+strategy.trend_sr.regime_ma,200
+strategy.trend_sr.pivot_lookback,20
+strategy.trend_sr.pivot_strength,3
+strategy.trend_sr.atr_period,14
+strategy.trend_sr.atr_mult,2.5
+strategy.trend_sr.breakout_buffer_atr,0.35
+strategy.trend_sr.cooldown_bars,6
+strategy.trend_sr.trailing_activation_pct,5.0
+strategy.trend_sr.trailing_pct,12.0
+strategy.trend_sr.long_only,true
+
+# ADX on: crypto fakes breakouts constantly, and docs/trend_sr_filters.md puts
+# the useful band at 20-25. Volume stays OFF - Alpaca reports crypto volume from
+# its own venues only, so the signal is partial and noisy.
+strategy.trend_sr.min_adx,22
+strategy.trend_sr.adx_period,14
+strategy.trend_sr.volume_mult,0
+strategy.trend_sr.volume_ma,20
+
+# -- Risk --
+# All five coins in ONE correlation group is the most important line in this
+# file. They all trade as leveraged BTC beta; sizing them as five independent
+# bets is how a book that looks diversified takes one concentrated loss.
+#
+# At $500, 1% risk is $5 per trade, which a ~5% ATR stop turns into ~$100 of
+# notional. The $150 cap keeps 3 positions x cap ($450) inside the $500 book, so
+# the gross-exposure cap never has to act as a backstop.
+# Crypto sizes fractionally, so that is a real position rather than a
+# rounding error - the zero-quantity floor described in docs/risk_model.md only
+# bites on whole-share assets.
+risk.risk_per_trade_pct,1.0
+risk.max_position_usd,150
+risk.stop_loss_pct,2.0
+risk.max_open_positions,3
+# Heat caps have to leave room for the positions above: 3 trades x $5 = $15, so
+# the group cap ($17.50) must sit above that or the bot silently only ever takes
+# one coin.
+risk.max_portfolio_heat_pct,4.0
+risk.max_group_heat_pct,3.5
+risk.correlation_groups.crypto_beta,"BTC/USD,ETH/USD,SOL/USD,LINK/USD,AVAX/USD"
+risk.max_gross_exposure_pct,100
+
+# The two daily limits combine by taking the TIGHTER one. 4% of $500 is $20, so
+# these agree. The previous $3,000 was sized for a different account and could
+# never bind - the percent limit was silently doing all the work.
+risk.daily_loss_limit_usd,20
+risk.daily_loss_limit_pct,4.0
+risk.derisk_start_dd_pct,10.0
+risk.halt_dd_pct,25.0
+risk.min_risk_scale,0.40
+
+# loser_cut_pct MUST stay above the ATR stop. Unlike trailing_stop_pct it does
+# fire on crypto - it runs off broker positions in executor.py, independent of
+# asset class. At 2.5xATR on 1h crypto the stop sits ~4-8% out, so the default 7
+# would front-run the strategy's own exit on nearly every trade.
+risk.loser_cut_pct,15.0
+# Inert on crypto (place_broker_stop=False - Alpaca rejects crypto stop orders).
+# Set for consistency; trailing_pct above is what actually trails.
+risk.trailing_stop_pct,20.0
+
+# Fee note, which no setting here can fix: Alpaca crypto fees run ~0.25% a side,
+# so a round trip costs ~0.5% of notional against a ~5% stop - roughly 10% of the
+# risk budget per trade. That ratio is set by stop width, not position size, so
+# it does not improve by sizing up. Trading less often (higher min_adx, longer
+# bar_minutes) is the only lever that moves it.
